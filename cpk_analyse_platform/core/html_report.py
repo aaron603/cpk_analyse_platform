@@ -84,8 +84,11 @@ def _build_html(data: dict, title: str, station_info: dict = None) -> str:
             js_data[stype][sheet] = {}
             for pname, stats in points.items():
                 entry = {k: v for k, v in stats.items() if k != 'values'}
-                entry['barcodes'] = [b for b, _ in stats.get('values', [])]
-                entry['raw'] = [v for _, v in stats.get('values', [])]
+                entry['barcodes'] = [b for b, _, _ in stats.get('values', [])]
+                entry['raw'] = [v for _, v, _ in stats.get('values', [])]
+                entry['statuses'] = [1 if p else 0 for _, _, p in stats.get('values', [])]
+                entry['n_pass'] = stats.get('n_pass', stats.get('n', 0))
+                entry['n_fail'] = stats.get('n_fail', 0)
                 js_data[stype][sheet][pname] = entry
 
     js_data_str = json.dumps(js_data, ensure_ascii=False)
@@ -128,11 +131,16 @@ def _build_html(data: dict, title: str, station_info: dict = None) -> str:
 <!-- Station panels -->
 {station_tabs_content}
 
-<div id="range-modal" class="modal-overlay" style="display:none">
-  <div class="modal-box">
-    <div class="modal-title">数值范围搜索结果</div>
+<div id="range-modal" class="modal-overlay" style="display:none"
+     onclick="this.style.display='none'">
+  <div class="modal-box" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <div class="modal-title">数值范围搜索结果</div>
+      <button class="modal-close"
+              onclick="document.getElementById('range-modal').style.display='none'"
+              title="关闭">✕</button>
+    </div>
     <div id="range-result"></div>
-    <button class="btn btn-sm" onclick="document.getElementById('range-modal').style.display='none'">关闭</button>
   </div>
 </div>
 
@@ -284,11 +292,14 @@ function drawChart(stationType, sheetName, pointName) {{
   // ── Histogram bins ───────────────────────────────────────────────────
   const nBins = Math.min(30, Math.max(8, Math.ceil(Math.sqrt(rawVals.length))));
   const binW = (xMax - xMin) / nBins;
-  const bins = new Array(nBins).fill(0);
-  rawVals.forEach(v => {{
+  const statusArr = pt.statuses || [];
+  const passBins = new Array(nBins).fill(0);
+  const failBins = new Array(nBins).fill(0);
+  rawVals.forEach((v, i) => {{
     const idx = Math.min(nBins - 1, Math.max(0, Math.floor((v - xMin) / binW)));
-    bins[idx]++;
+    if (statusArr[i] === 0) failBins[idx]++; else passBins[idx]++;
   }});
+  const bins = passBins.map((p, i) => p + failBins[i]);
   const maxCount = Math.max(...bins);
 
   // ── Normal curve ─────────────────────────────────────────────────────
@@ -325,16 +336,42 @@ function drawChart(stationType, sheetName, pointName) {{
     ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + plotH); ctx.stroke();
   }}
 
-  // ── Histogram bars ───────────────────────────────────────────────────
+  // ── Histogram bars (pass=blue at bottom, fail=red stacked on top) ────
+  const hasAnyFail = failBins.some(c => c > 0);
   for (let i = 0; i < nBins; i++) {{
     const bx = toCanvasX(xMin + i * binW);
     const bx2 = toCanvasX(xMin + (i + 1) * binW);
-    const bh = bins[i] * histScale * scaleY;
-    ctx.fillStyle = 'rgba(70, 130, 180, 0.35)';
-    ctx.fillRect(bx, padT + plotH - bh, bx2 - bx - 1, bh);
-    ctx.strokeStyle = 'rgba(70, 130, 180, 0.6)';
-    ctx.lineWidth = 0.5;
-    ctx.strokeRect(bx, padT + plotH - bh, bx2 - bx - 1, bh);
+    const bw = bx2 - bx - 1;
+    const totalH = bins[i] * histScale * scaleY;
+    const passH = passBins[i] * histScale * scaleY;
+    const failH = failBins[i] * histScale * scaleY;
+    if (passH > 0) {{
+      ctx.fillStyle = 'rgba(70, 130, 180, 0.45)';
+      ctx.fillRect(bx, padT + plotH - passH, bw, passH);
+      ctx.strokeStyle = 'rgba(70, 130, 180, 0.7)';
+      ctx.lineWidth = 0.5;
+      ctx.strokeRect(bx, padT + plotH - passH, bw, passH);
+    }}
+    if (failH > 0) {{
+      ctx.fillStyle = 'rgba(220, 50, 50, 0.5)';
+      ctx.fillRect(bx, padT + plotH - totalH, bw, failH);
+      ctx.strokeStyle = 'rgba(200, 30, 30, 0.8)';
+      ctx.lineWidth = 0.5;
+      ctx.strokeRect(bx, padT + plotH - totalH, bw, failH);
+    }}
+  }}
+  // Legend when failures present
+  if (hasAnyFail) {{
+    ctx.font = '11px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillStyle = 'rgba(70,130,180,0.8)';
+    ctx.fillRect(padL + 4, padT + 4, 12, 10);
+    ctx.fillStyle = '#333';
+    ctx.fillText('通过', padL + 19, padT + 13);
+    ctx.fillStyle = 'rgba(220,50,50,0.8)';
+    ctx.fillRect(padL + 56, padT + 4, 12, 10);
+    ctx.fillStyle = '#333';
+    ctx.fillText('失败', padL + 71, padT + 13);
   }}
 
   // ── Normal curve ─────────────────────────────────────────────────────
@@ -431,9 +468,17 @@ function _updateChartInfo(stationType, sheetName, pt, pointName) {{
     : '#c62828';
   // Cpk label only visible when user has typed "cpk" in the search box
   const showCpk = cpkModeActive[stationType + '|' + sheetName] || false;
+  const nPass = pt.n_pass != null ? pt.n_pass : pt.n;
+  const nFail = pt.n_fail != null ? pt.n_fail : 0;
+  const passRate = pt.n > 0 ? (nPass / pt.n * 100).toFixed(1) : '-';
+  const passColor = nFail === 0 ? '#2e7d32' : (nFail / pt.n < 0.05 ? '#e65100' : '#c62828');
+  const passSpan = nFail > 0
+    ? `<span style="margin-right:16px;color:${{passColor}}"><b>通过率:</b> ${{passRate}}%&nbsp;(${{nPass}}通过/${{nFail}}失败)</span>`
+    : '';
   el.innerHTML = `
     <span style="margin-right:16px"><b>测试项目:</b> ${{pointName}}</span>
     <span style="margin-right:16px"><b>N=</b>${{pt.n}}</span>
+    ${{passSpan}}
     <span style="margin-right:16px"><b>μ=</b>${{pt.mean != null ? pt.mean.toFixed(4) : '-'}}</span>
     <span style="margin-right:16px"><b>σ=</b>${{pt.std != null ? pt.std.toFixed(4) : '-'}}</span>
     <span class="cpk-chartinfo"
@@ -587,9 +632,28 @@ def _build_sheet_panel(stype: str, sheet: str, points: dict, visible: bool) -> s
             else:
                 cpk_color = 'color:#c62828;font-weight:bold'
 
+        _n = stats.get('n', 0)
+        _n_pass = stats.get('n_pass')
+        _n_fail = stats.get('n_fail', 0)
+        if _n_pass is not None and _n and _n > 0:
+            _rate = _n_pass / _n * 100
+            if _n_fail == 0:
+                _rs = 'color:#2e7d32'
+                _rv = '100%'
+            elif _rate >= 95:
+                _rs = 'color:#e65100;font-weight:bold'
+                _rv = f'{_rate:.1f}%'
+            else:
+                _rs = 'color:#c62828;font-weight:bold'
+                _rv = f'{_rate:.1f}%'
+            pass_rate_cell = f'<td style="{_rs}">{_rv}</td>'
+        else:
+            pass_rate_cell = '<td>-</td>'
+
         rows_html += f'''<tr data-point="{pname}" onclick="onRowClick('{_esc_js(stype)}','{_esc_js(sheet)}','{_esc_js(pname)}')" style="cursor:pointer">
   <td>{pname}</td>
   <td>{stats.get("n", "-")}</td>
+  {pass_rate_cell}
   <td>{_fmt(stats.get("mean"))}</td>
   <td>{_fmt(stats.get("std"))}</td>
   <td>{_fmt(stats.get("min"))}</td>
@@ -635,6 +699,7 @@ def _build_sheet_panel(stype: str, sheet: str, points: dict, visible: bool) -> s
         <tr>
           <th>测试子项目</th>
           <th>样本数</th>
+          <th>通过率</th>
           <th>均值</th>
           <th>标准差</th>
           <th>最小值</th>
@@ -767,7 +832,18 @@ canvas { display: block; max-width: 100%; }
   max-width: 600px; width: 90%; max-height: 80vh; overflow-y: auto;
   box-shadow: 0 8px 32px rgba(0,0,0,0.2);
 }
-.modal-title { font-size: 16px; font-weight: bold; color: #1a237e; margin-bottom: 12px; }
+.modal-header {
+  display: flex; align-items: center; justify-content: space-between;
+  position: sticky; top: -20px; margin: -20px -24px 12px;
+  background: #fff; padding: 16px 24px 12px;
+  border-bottom: 1px solid #e8eaf6; z-index: 1;
+}
+.modal-title { font-size: 16px; font-weight: bold; color: #1a237e; }
+.modal-close {
+  background: none; border: none; font-size: 18px; cursor: pointer;
+  color: #888; line-height: 1; padding: 2px 8px; border-radius: 4px;
+}
+.modal-close:hover { color: #c62828; background: #fce4e4; }
 .modal-table { width: 100%; border-collapse: collapse; margin-bottom: 12px; font-size: 13px; }
 .modal-table th { background: #e8eaf6; padding: 6px 10px; text-align: left; }
 .modal-table td { padding: 5px 10px; border-bottom: 1px solid #eee; }

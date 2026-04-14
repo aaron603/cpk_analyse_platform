@@ -203,6 +203,10 @@ def analyze_xlsx_folder(xlsx_folder: str, log_cb=None) -> dict:
                 except (TypeError, ValueError):
                     continue
 
+                # Row-level pass/fail status (from 'result' column if present)
+                row_result = str(row.get('result', 'pass')).strip().lower()
+                row_pass = (row_result != 'fail')
+
                 if pname not in collected[sheet]:
                     collected[sheet][pname] = {
                         'values': [],
@@ -211,7 +215,8 @@ def analyze_xlsx_folder(xlsx_folder: str, log_cb=None) -> dict:
                         'usl': None,
                     }
 
-                collected[sheet][pname]['values'].append((barcode, val))
+                # values stores (barcode, measurement_value, is_pass)
+                collected[sheet][pname]['values'].append((barcode, val, row_pass))
 
                 # Update limits only if this file is newer
                 if file_time >= collected[sheet][pname]['latest_time']:
@@ -244,7 +249,7 @@ def analyze_xlsx_folder(xlsx_folder: str, log_cb=None) -> dict:
         results[sheet] = {}
 
         for pname, data in points.items():
-            raw_values = [v for _, v in data['values']]
+            raw_values = [v for _, v, _ in data['values']]
             lsl = data['lsl']
             usl = data['usl']
 
@@ -263,7 +268,10 @@ def analyze_xlsx_folder(xlsx_folder: str, log_cb=None) -> dict:
                 continue
 
             stats = calculate_cpk(raw_values, lsl, usl)
-            stats['values'] = data['values']
+            stats['values'] = data['values']   # [(barcode, value, is_pass), ...]
+            n_pass = sum(1 for _, _, p in data['values'] if p)
+            stats['n_pass'] = n_pass
+            stats['n_fail'] = len(data['values']) - n_pass
             results[sheet][pname] = stats
             analysed_total += 1
 

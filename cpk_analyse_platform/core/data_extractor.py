@@ -288,15 +288,18 @@ def run_extraction(
     log_cb=None,
     progress_cb=None,
     stop_event=None,
+    mode: str = 'latest_pass',
 ) -> dict:
     """
     Run full extraction for all barcodes across all station types.
 
-    Multiple configs with the same 'type' are merged: records from all
-    folders are pooled, then the latest successful one wins.
+    mode:
+      'latest_pass' — (default) only the newest successful record per barcode
+      'all_pass'    — all successful records per barcode (multiple xlsx copied)
+      'all'         — all records regardless of pass/fail
 
-    Result dict per barcode includes extra fields for the missing report:
-      total_records, pass_records, latest_any_time, found_in, note
+    Multiple configs with the same 'type' are merged.
+    Result dict per barcode includes extra fields for the missing report.
     """
     def _log(msg):
         if log_cb:
@@ -389,22 +392,32 @@ def run_extraction(
                 }
 
             else:
-                # Records with xlsx that passed (needed for CPK)
-                successful_xlsx = [
-                    (p, x, j, t) for p, x, j, s, t in all_records
-                    if s and x is not None
-                ]
-                # All pass records (including json-only)
-                all_pass = [
-                    (p, x, j, t) for p, x, j, s, t in all_records if s
-                ]
+                # ── Select candidate records based on mode ────────────
+                if mode == 'all':
+                    # All records that have xlsx, regardless of pass/fail
+                    candidates = [
+                        (p, x, j, s, t) for p, x, j, s, t in all_records
+                        if x is not None
+                    ]
+                elif mode == 'fail_only':
+                    # Only failed records with xlsx
+                    candidates = [
+                        (p, x, j, s, t) for p, x, j, s, t in all_records
+                        if not s and x is not None
+                    ]
+                else:
+                    # latest_pass / all_pass: only successful xlsx records
+                    candidates = [
+                        (p, x, j, s, t) for p, x, j, s, t in all_records
+                        if s and x is not None
+                    ]
+                    all_pass_any = any(s for _, _, _, s, _ in all_records)
 
-                if not all_pass:
+                if mode in ('latest_pass', 'all_pass') and not all_pass_any:
                     no_pass_n += 1
-                    fail_n = total_recs - pass_recs
                     _log(
                         f"  [WARN] {bc} — 找到 {total_recs} 条记录，"
-                        f"通过 {pass_recs} 条，失败 {fail_n} 条，"
+                        f"通过 {pass_recs} 条，失败 {total_recs - pass_recs} 条，"
                         f"无通过记录，最近测试: {latest_any_str}"
                     )
                     r = {
@@ -415,71 +428,88 @@ def run_extraction(
                         'latest_any_time': latest_any_str, 'found_in': '', 'note': '',
                     }
 
-                elif not successful_xlsx:
+                elif not candidates:
+                    # Has records but no usable xlsx
                     no_xlsx_n += 1
+                    reason = (
+                        '无失败记录（均通过）' if mode == 'fail_only'
+                        else 'json-only记录，无xlsx' if mode != 'all'
+                        else 'json-only，无xlsx'
+                    )
                     _log(
                         f"  [WARN] {bc} — 找到 {total_recs} 条记录，"
-                        f"{pass_recs} 条通过，但全为 json-only（无 xlsx），"
-                        f"无法进行 CPK 分析"
+                        f"但全为json-only（无xlsx），无法进行 CPK 分析"
                     )
                     r = {
                         'status': 'no_xlsx', 'barcode': bc,
-                        'message': '通过记录存在但无xlsx，无法CPK分析',
+                        'message': '记录存在但无xlsx，无法CPK分析',
                         'xlsx': None, 'json': None,
                         'total_records': total_recs, 'pass_records': pass_recs,
                         'latest_any_time': latest_any_str, 'found_in': '',
-                        'note': '仅有json文件，缺少xlsx',
+                        'note': reason,
                     }
 
                 else:
-                    # Pick latest successful xlsx record
-                    successful_xlsx.sort(key=lambda x: x[3], reverse=True)
-                    ts_folder, src_xlsx, src_json, test_time = successful_xlsx[0]
+                    # Copy one or all candidate records
+                    candidates.sort(key=lambda x: x[4], reverse=True)  # newest first
 
-                    # Determine which station folder this record came from
-                    found_in = ''
-                    for folder in valid_folders:
-                        if os.path.normpath(folder) in os.path.normpath(ts_folder):
-                            found_in = folder
-                            break
-
-                    dest_xlsx = os.path.join(xlsx_out, os.path.basename(src_xlsx))
-                    copy_note = ''
-                    try:
-                        shutil.copy2(src_xlsx, dest_xlsx)
-                    except Exception as exc:
-                        dest_xlsx = None
-                        copy_note = f'xlsx复制失败: {exc}'
-                        _log(f"  [ERROR] {bc} xlsx 复制失败: {exc}")
-
-                    dest_json = None
-                    if src_json:
-                        dest_json = os.path.join(
-                            json_out, os.path.basename(src_json)
-                        )
-                        try:
-                            shutil.copy2(src_json, dest_json)
-                        except Exception as exc:
-                            dest_json = None
-                            _log(f"  [WARN] {bc} json 复制失败: {exc}")
-
-                    has_json_note = '' if dest_json else '（无对应json）'
-                    ok_n += 1
-                    time_str = test_time.strftime('%Y-%m-%d %H:%M:%S')
-                    multi_note = (
-                        f"（共{total_recs}条记录，{pass_recs}条通过，取最新）"
-                        if total_recs > 1 else ''
+                    to_copy = (
+                        candidates[:1]          # latest_pass: single record
+                        if mode == 'latest_pass'
+                        else candidates         # all_pass / all: every record
                     )
+
+                    last_dest_xlsx = None
+                    last_dest_json = None
+                    copy_errors = []
+                    found_in = ''
+
+                    for ts_folder, src_xlsx, src_json, rec_pass, test_time in to_copy:
+                        dest_xlsx = os.path.join(xlsx_out, os.path.basename(src_xlsx))
+                        try:
+                            shutil.copy2(src_xlsx, dest_xlsx)
+                            last_dest_xlsx = dest_xlsx
+                        except Exception as exc:
+                            copy_errors.append(f'xlsx复制失败: {exc}')
+                            _log(f"  [ERROR] {bc} xlsx 复制失败: {exc}")
+                            continue
+
+                        if src_json:
+                            dest_json = os.path.join(
+                                json_out, os.path.basename(src_json)
+                            )
+                            try:
+                                shutil.copy2(src_json, dest_json)
+                                last_dest_json = dest_json
+                            except Exception as exc:
+                                _log(f"  [WARN] {bc} json 复制失败: {exc}")
+
+                        if not found_in:
+                            for folder in valid_folders:
+                                if os.path.normpath(folder) in \
+                                        os.path.normpath(ts_folder):
+                                    found_in = folder
+                                    break
+
+                    ok_n += 1
+                    time_str = candidates[0][4].strftime('%Y-%m-%d %H:%M:%S')
+                    count_note = (
+                        f"（共{total_recs}条记录，复制{len(to_copy)}条）"
+                        if len(to_copy) > 1 else
+                        f"（共{total_recs}条记录，取最新）" if total_recs > 1 else ''
+                    )
+                    pass_flag = candidates[0][3]
+                    status_tag = '[OK]  ' if pass_flag else '[OK-F]'  # F=fail record
                     _log(
-                        f"  [OK]   {bc}  测试时间:{time_str}"
-                        f"{has_json_note}{multi_note}"
+                        f"  {status_tag} {bc}  测试时间:{time_str}"
+                        f"{'' if last_dest_json else '（无json）'}{count_note}"
                     )
                     r = {
                         'status': 'success', 'barcode': bc, 'message': 'OK',
-                        'xlsx': dest_xlsx, 'json': dest_json,
+                        'xlsx': last_dest_xlsx, 'json': last_dest_json,
                         'total_records': total_recs, 'pass_records': pass_recs,
                         'latest_any_time': time_str, 'found_in': found_in,
-                        'note': copy_note,
+                        'note': '; '.join(copy_errors),
                     }
 
             results.append(r)
@@ -505,6 +535,68 @@ def run_extraction(
         }
 
     return summary
+
+
+# ---------------------------------------------------------------------------
+# Auto-discover barcodes from station folders (used when no input Excel)
+# ---------------------------------------------------------------------------
+
+def discover_barcodes(station_folders: list) -> list:
+    """
+    Walk all configured station folders and return unique barcode strings.
+
+    A "barcode folder" is any folder that directly contains at least one
+    timestamp-named subdirectory (YYYYMMDDHHMMSS format). Dual-barcode
+    folder names like BC1_BC2 are split into individual barcodes when
+    both parts are alphanumeric strings of 5+ characters.
+
+    Skip rules follow the same list as find_test_records().
+    """
+    _SKIP_EXACT = {'debug', 'file_bk', 'env_comp', 'tm1_log', 'testresult'}
+    _SKIP_PREFIX = ('ru1_log_', 'ru2_log_', 'tm1_log', 'tm2_log',
+                    'gain flatness', 'tx aclr', 'peak power',
+                    'rx sensitivity', 'efficency')
+
+    def _should_skip(name: str) -> bool:
+        nl = name.lower()
+        return nl in _SKIP_EXACT or any(nl.startswith(p) for p in _SKIP_PREFIX)
+
+    seen: set = set()
+    result: list = []
+
+    for root_folder in station_folders:
+        if not os.path.isdir(root_folder):
+            continue
+
+        for dirpath, dirs, _files in os.walk(root_folder):
+            dirs[:] = [d for d in dirs if not _should_skip(d)]
+            folder_name = os.path.basename(dirpath)
+
+            # A barcode folder must directly contain at least one timestamp dir
+            has_ts_child = any(_is_timestamp_folder(d) for d in dirs)
+            if not has_ts_child:
+                continue
+
+            # Stop descending into this barcode folder
+            dirs.clear()
+
+            # Try to split dual-barcode names (e.g. BC1_BC2)
+            parts = folder_name.split('_')
+            bc_parts = [p for p in parts if len(p) >= 5 and p.isalnum()]
+
+            if len(bc_parts) >= 2:
+                # Dual-barcode folder — add each individually
+                for p in bc_parts:
+                    if p not in seen:
+                        seen.add(p)
+                        result.append(p)
+            else:
+                # Single barcode or short name — add the whole folder name
+                if folder_name and folder_name not in seen:
+                    seen.add(folder_name)
+                    result.append(folder_name)
+
+    return result
 
 
 # ---------------------------------------------------------------------------
