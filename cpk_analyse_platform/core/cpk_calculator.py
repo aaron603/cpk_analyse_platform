@@ -492,3 +492,130 @@ def analyze_json_folder(json_folder: str, log_cb=None) -> dict:
          f"跳过固定值/非数值 {skipped_fixed} 个，样本不足 {skipped_small} 个")
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Per-file completeness analysis (used by duplicate report in all_pass mode)
+# ---------------------------------------------------------------------------
+
+def analyze_xlsx_completeness(xlsx_folder: str, log_cb=None) -> dict:
+    """
+    Analyze each xlsx file in `xlsx_folder` to determine whether it contains
+    the full set of expected test points.
+
+    Reference set  = union of all (sheet, point_name) with valid numeric data
+                     across every file in the folder.
+    Complete file  = has every item in the reference set.
+    Incomplete file = missing at least one reference item.
+
+    Returns:
+    {
+        'total_files'  : int,
+        'reference_set': [(sheet, point_name), ...],   # sorted, full expected set
+        'complete'     : [{'barcode': str, 'filename': str, 'n_items': int}, ...],
+        'incomplete'   : [
+            {
+                'barcode'  : str,
+                'filename' : str,
+                'present_n': int,
+                'missing'  : [(sheet, point_name), ...],   # sorted
+            }, ...
+        ],
+    }
+    """
+    def _log(msg):
+        if log_cb:
+            log_cb(msg)
+
+    folder = Path(xlsx_folder)
+    xlsx_files = sorted(folder.glob('*.xlsx'))
+
+    if not xlsx_files:
+        return {
+            'total_files': 0, 'reference_set': [],
+            'complete': [], 'incomplete': [],
+        }
+
+    # ── Pass 1: collect per-file test-point sets ──────────────────────────
+    # file_data list: {'barcode': str, 'filename': str, 'has_set': set}
+    file_data: list = []
+
+    for xlsx_path in xlsx_files:
+        stem = xlsx_path.stem
+        _m = re.search(r'_(\d{14})_(.+)$', stem)
+        barcode = _m.group(2) if _m else (stem.rsplit('_', 1)[-1] if '_' in stem else stem)
+
+        has_set: set = set()
+        try:
+            xl = pd.ExcelFile(xlsx_path)
+        except Exception as exc:
+            _log(f"  [完整性检查] 无法打开 {xlsx_path.name}: {exc}")
+            file_data.append({'barcode': barcode, 'filename': xlsx_path.name,
+                              'has_set': has_set})
+            continue
+
+        for sheet in xl.sheet_names:
+            try:
+                df = xl.parse(sheet)
+            except Exception:
+                continue
+            if df.empty:
+                continue
+            if 'point_name' not in df.columns or 'data' not in df.columns:
+                continue
+            for _, row in df.iterrows():
+                pname = str(row.get('point_name', '')).strip()
+                if not pname or pname.lower() == 'nan':
+                    continue
+                try:
+                    float(row.get('data'))
+                except (TypeError, ValueError):
+                    continue
+                has_set.add((sheet, pname))
+
+        file_data.append({'barcode': barcode, 'filename': xlsx_path.name,
+                          'has_set': has_set})
+
+    # ── Reference set = union of all test points ──────────────────────────
+    reference_set_s: set = set()
+    for fd in file_data:
+        reference_set_s |= fd['has_set']
+    reference_set = sorted(reference_set_s)   # list of (sheet, pname), sorted
+
+    if not reference_set:
+        return {
+            'total_files': len(xlsx_files), 'reference_set': [],
+            'complete': [], 'incomplete': [],
+        }
+
+    # ── Pass 2: classify complete vs incomplete ───────────────────────────
+    complete: list = []
+    incomplete: list = []
+
+    for fd in file_data:
+        barcode = fd['barcode']
+        has_set = fd['has_set']
+        missing_s = reference_set_s - has_set
+        if missing_s:
+            incomplete.append({
+                'barcode'  : barcode,
+                'filename' : fd['filename'],
+                'present_n': len(has_set),
+                'missing'  : sorted(missing_s),
+            })
+        else:
+            complete.append({
+                'barcode' : barcode,
+                'filename': fd['filename'],
+                'n_items' : len(has_set),
+            })
+
+    _log(f"  [完整性检查] 参考子项数: {len(reference_set)}"
+         f"  |  完整: {len(complete)}  |  不完整: {len(incomplete)}")
+
+    return {
+        'total_files'  : len(xlsx_files),
+        'reference_set': reference_set,
+        'complete'     : complete,
+        'incomplete'   : incomplete,
+    }

@@ -15,6 +15,7 @@ Tabs:
 from __future__ import annotations
 
 import json
+import os
 import random
 from collections import defaultdict
 from datetime import datetime
@@ -31,6 +32,7 @@ def generate_comprehensive_report(
     title: str = '',
     generated_at: str = '',
     fail_data: dict = None,
+    log_cb=None,
 ) -> str:
     """
     Build and write an HTML report.
@@ -48,22 +50,63 @@ def generate_comprehensive_report(
         Generation timestamp string, e.g. "2026-04-16 14:30:00".
     fail_data : dict, optional
         {stype: {barcode_stats, fail_barcodes, never_pass_barcodes, all_fail_items}}
+    log_cb : callable, optional
+        Logging callback for diagnostic messages.
 
     Returns
     -------
     str
         output_path
     """
+    def _log(msg):
+        if log_cb:
+            log_cb(msg)
+
     if not generated_at:
         generated_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     if not title:
         title = 'CPK综合分析报告'
 
+    # ── Diagnostic: inspect analysis_data before building ──────────────────
+    _log('[综合报告] ===== 数据诊断 =====')
+    if not analysis_data:
+        _log('[综合报告] ⚠ analysis_data 为空 → 报告将无测试数据（Pass 0 / Fail 0）')
+    else:
+        total_pts = 0
+        total_vals = 0
+        for stype, sheets in analysis_data.items():
+            n_pts = sum(len(pts) for pts in sheets.values())
+            n_vals = sum(
+                sum(len(st.get('values') or []) for st in pts.values())
+                for pts in sheets.values()
+            )
+            total_pts += n_pts
+            total_vals += n_vals
+            _log(f'[综合报告]   [{stype}]: {len(sheets)} Sheet, '
+                 f'{n_pts} 测试项, {n_vals} 测量值')
+        if total_vals == 0:
+            _log('[综合报告] ⚠ 测试项有CPK但 values 列表全为空 → SN数将为0')
+            _log('[综合报告]   原因：analyze_xlsx/json_folder 未保存 values 字段')
+        else:
+            _log(f'[综合报告] ✓ 共 {total_pts} 测试项, {total_vals} 测量值 → 将写入报告')
+
     data_dict, sn_detail = _build_data(analysis_data, fail_data, title, generated_at)
+
+    # ── Diagnostic: inspect built data_dict ────────────────────────────────
+    _log(f'[综合报告] data_dict: total={data_dict["total"]}, '
+         f'pass={data_dict["pass_n"]}, fail={data_dict["fail_n"]}, '
+         f'yield={data_dict["yield_pct"]}%, '
+         f'cpk_list={len(data_dict["cpk_list"])}, '
+         f'sheet_summary={len(data_dict["sheet_summary"])}')
+    _log('[综合报告] =================')
+
     html_str = _build_html(data_dict, sn_detail)
 
     with open(output_path, 'w', encoding='utf-8') as fh:
         fh.write(html_str)
+
+    _log(f'[综合报告] 文件写入完成: {len(html_str):,} 字符, '
+         f'{os.path.getsize(output_path) // 1024} KB')
 
     return output_path
 
@@ -519,16 +562,37 @@ def _build_html(data_dict: dict, sn_detail: dict) -> str:
     title = data_dict.get('title', 'CPK综合分析报告')
     generated_at = data_dict.get('generated_at', '')
 
+    # Python-side values for static banner (no JS needed)
+    py_total  = data_dict.get('total', 0)
+    py_pass   = data_dict.get('pass_n', 0)
+    py_fail   = data_dict.get('fail_n', 0)
+    py_yield  = data_dict.get('yield_pct', 0.0)
+    py_cpk    = len(data_dict.get('cpk_list', []))
+    py_sheets = len(data_dict.get('sheet_summary', []))
+
     html = f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>{_esc(title)}</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"
+  async onload="if(window._onChartJsLoaded)window._onChartJsLoaded()"></script>
 <style>{_CSS}</style>
 </head>
 <body>
+
+<!-- Python静态数据摘要 — 固定在底部，由Python直接写入，不依赖JS/CDN，用于定位问题 -->
+<div id="pyDataBanner" style="position:fixed;bottom:0;left:0;right:0;z-index:1000;background:#e8f5e9;border-top:2px solid #66bb6a;padding:4px 14px;font-size:11.5px;color:#1b5e20;display:flex;gap:18px;align-items:center;flex-wrap:wrap;font-family:monospace;box-shadow:0 -2px 6px rgba(0,0,0,.1)">
+  <span style="font-weight:700">📊 Python数据摘要（不依赖JS）</span>
+  <span>总SN: <b>{py_total}</b></span>
+  <span>Pass: <b>{py_pass}</b></span>
+  <span>Fail: <b>{py_fail}</b></span>
+  <span>良率: <b>{py_yield}%</b></span>
+  <span>CPK测试项: <b>{py_cpk}</b></span>
+  <span>Sheet数: <b>{py_sheets}</b></span>
+  <span style="margin-left:auto;cursor:pointer;padding:2px 8px;background:#c8e6c9;border-radius:4px" onclick="this.parentNode.style.display='none'">确认后关闭 ✕</span>
+</div>
 
 <!-- TOP BAR -->
 <div class="topbar">
@@ -686,6 +750,29 @@ function fmt(v,d){{return v===null||v===undefined?'N/A':(+v).toFixed(d||2);}}
 function frColor(r){{return r>20?'#c81e1e':r>5?'#b45309':'#057a55';}}
 function cpkCls(v){{return v>=1.67?'cpk-best':v>=1.33?'cpk-good':v>=1.0?'cpk-ok':v>=0.67?'cpk-bad':'cpk-worst';}}
 function cpkBadge(v){{return v>=1.33?'<span class="badge b-pass">优</span>':v>=1.0?'<span class="badge b-blue">良</span>':v>=0.67?'<span class="badge b-warn">注意</span>':'<span class="badge b-fail">差</span>';}}
+// Chart.js loads async — always check dynamically so data renders immediately
+// even when CDN is slow or blocked in factory environments
+function tryChart(idOrEl, cfg) {{
+  var el = typeof idOrEl === 'string' ? document.getElementById(idOrEl) : idOrEl;
+  if (!el) return null;
+  if (typeof Chart === 'undefined') {{
+    // Overlay warning WITHOUT destroying the canvas element (needed for re-init after load)
+    var wrap = el.parentNode;
+    if (!wrap.querySelector('._chart-wait')) {{
+      var msg = document.createElement('div');
+      msg.className = '_chart-wait';
+      msg.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.9);z-index:2;border-radius:8px';
+      msg.innerHTML = '<span style="color:#9ca3af;font-size:13px">⚠ 图表库加载中，若长时间未显示请检查网络</span>';
+      wrap.style.position = 'relative';
+      wrap.appendChild(msg);
+    }}
+    return null;
+  }}
+  // Chart.js is ready — remove any pending overlay
+  var pending = el.parentNode.querySelector('._chart-wait');
+  if (pending) pending.remove();
+  return new Chart(el, cfg);
+}}
 
 // ---------------------------------------------------------------------------
 // Tab switching
@@ -707,38 +794,22 @@ function initTab(id) {{
 }}
 
 // ---------------------------------------------------------------------------
-// OVERVIEW — runs on load
+// OVERVIEW — data render runs immediately; charts run when Chart.js is ready
 // ---------------------------------------------------------------------------
-(function(){{
-  var D = DATA;
-  document.getElementById('topTitle').textContent = D.title;
-  document.getElementById('hdrTime').textContent = D.time_range;
-  document.getElementById('hdrPass').textContent = 'Pass ' + D.pass_n;
-  document.getElementById('hdrFail').textContent = 'Fail ' + D.fail_n;
+var _overviewD = null;           // shared so the CDN onload callback can reach it
+var _overviewChartsDone = false; // prevent double-draw if CDN loads fast
 
-  var yc = D.yield_pct >= 95 ? 'green' : D.yield_pct >= 85 ? 'orange' : 'red';
-  document.getElementById('kpiRow').innerHTML = [
-    {{c:'blue',  v:D.total,           l:'总测试SN数'}},
-    {{c:'green', v:D.pass_n,          l:'Pass'}},
-    {{c:'red',   v:D.fail_n,          l:'Fail'}},
-    {{c:yc,      v:D.yield_pct+'%',   l:'综合良率'}},
-    {{c:'purple',v:D.fail_sn_list.length, l:'失败SN数'}},
-  ].map(function(k){{
-    return '<div class="kpi '+k.c+'"><div class="kpi-val">'+k.v+'</div><div class="kpi-lbl">'+k.l+'</div></div>';
-  }}).join('');
-
-  var top3 = D.fail_point_stats.slice(0,3);
-  if(top3.length) {{
-    var items = top3.map(function(f){{return '<b>'+f.name+'</b>（'+f.fail+'次, '+f.fail_rate+'%）';}}).join(' &nbsp;|&nbsp; ');
-    document.getElementById('alertBanner').innerHTML =
-      '<div class="alert alert-red"><div class="alert-icon">⚠</div><div class="alert-body"><div class="alert-title">主要失效项（Top3）</div><div>'+items+'</div></div></div>';
-  }}
+function _drawOverviewCharts() {{
+  var D = _overviewD;
+  if (!D || typeof Chart === 'undefined') return;
+  if (_overviewChartsDone) return;
+  _overviewChartsDone = true;
 
   if(D.hourly && D.hourly.length > 0) {{
     var hrs  = D.hourly.map(function(h){{return h.hour.slice(5);}});
     var ylds = D.hourly.map(function(h){{return h.yield;}});
     var ptc  = ylds.map(function(y){{return y<85?'#c81e1e':y<95?'#b45309':'#057a55';}});
-    new Chart(document.getElementById('yieldChart'), {{
+    tryChart('yieldChart', {{
       type: 'line',
       data: {{
         labels: hrs,
@@ -763,7 +834,7 @@ function initTab(id) {{
 
   if(D.fault_type_list && D.fault_type_list.length > 0) {{
     var ftC = ['#c81e1e','#d97706','#1a56db','#057a55','#6c2bd9','#9ca3af'];
-    new Chart(document.getElementById('failTypeChart'), {{
+    tryChart('failTypeChart', {{
       type: 'doughnut',
       data: {{
         labels: D.fault_type_list.map(function(t){{return t.type;}}),
@@ -782,6 +853,43 @@ function initTab(id) {{
   }} else {{
     document.getElementById('failTypeWrap').innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#9ca3af;font-size:14px">暂无数据</div>';
   }}
+}}
+
+// CDN onload handler — re-draw charts in whichever tabs already initialized
+window._onChartJsLoaded = function() {{
+  _drawOverviewCharts();
+  // Re-init tabs that were opened before Chart.js was ready
+  if (_initDone['fail'])    {{ _initDone['fail']    = false; initFail(); }}
+  if (_initDone['cpk'])     {{ _initDone['cpk']     = false; initCpk(); }}
+  if (_initDone['dist'])    {{ _initDone['dist']    = false; initDist(); }}
+  if (_initDone['pattern']) {{ _initDone['pattern'] = false; initPattern(); }}
+}};
+
+(function(){{
+  var D = DATA;
+  _overviewD = D;  // store for CDN-onload re-draw
+  document.getElementById('topTitle').textContent = D.title;
+  document.getElementById('hdrTime').textContent = D.time_range;
+  document.getElementById('hdrPass').textContent = 'Pass ' + D.pass_n;
+  document.getElementById('hdrFail').textContent = 'Fail ' + D.fail_n;
+
+  var yc = D.yield_pct >= 95 ? 'green' : D.yield_pct >= 85 ? 'orange' : 'red';
+  document.getElementById('kpiRow').innerHTML = [
+    {{c:'blue',  v:D.total,           l:'总测试SN数'}},
+    {{c:'green', v:D.pass_n,          l:'Pass'}},
+    {{c:'red',   v:D.fail_n,          l:'Fail'}},
+    {{c:yc,      v:D.yield_pct+'%',   l:'综合良率'}},
+    {{c:'purple',v:D.fail_sn_list.length, l:'失败SN数'}},
+  ].map(function(k){{
+    return '<div class="kpi '+k.c+'"><div class="kpi-val">'+k.v+'</div><div class="kpi-lbl">'+k.l+'</div></div>';
+  }}).join('');
+
+  var top3 = D.fail_point_stats.slice(0,3);
+  if(top3.length) {{
+    var items = top3.map(function(f){{return '<b>'+f.name+'</b>（'+f.fail+'次, '+f.fail_rate+'%）';}}).join(' &nbsp;|&nbsp; ');
+    document.getElementById('alertBanner').innerHTML =
+      '<div class="alert alert-red"><div class="alert-icon">⚠</div><div class="alert-body"><div class="alert-title">主要失效项（Top3）</div><div>'+items+'</div></div></div>';
+  }}
 
   var tb = document.querySelector('#sheetTbl tbody');
   D.sheet_summary.forEach(function(s) {{
@@ -797,6 +905,10 @@ function initTab(id) {{
       +'<td>'+(s.fail_rate>20?'<span class="badge b-red">需关注</span>':s.fail_rate>5?'<span class="badge b-warn">注意</span>':'<span class="badge b-pass">正常</span>')+'</td>'
       +'</tr>';
   }});
+
+  // Draw overview charts immediately if Chart.js already loaded (fast CDN),
+  // otherwise the window._onChartJsLoaded callback will draw them later
+  _drawOverviewCharts();
 }})();
 
 // ---------------------------------------------------------------------------
@@ -818,7 +930,7 @@ function initFail() {{
   var h   = Math.max(480, top.length * 22);
   document.getElementById('failBarWrap').style.height = h + 'px';
   var bgs = top.map(function(f){{return f.fail_rate>30?'#c81e1e':f.fail_rate>15?'#d97706':'#f59e0b';}});
-  new Chart(document.getElementById('failBar'), {{
+  tryChart('failBar', {{
     type: 'bar',
     data: {{
       labels: top.map(function(f){{return f.name.length>40?f.name.slice(0,40)+'...':f.name;}}),
@@ -966,7 +1078,7 @@ function initCpk() {{
   items.sort(function(a,b){{return a.cpk-b.cpk;}});
   var h = Math.max(300, items.length * 22);
   document.getElementById('cpkWrap').innerHTML = '<canvas id="cpkChart" style="height:'+h+'px"></canvas>';
-  new Chart(document.getElementById('cpkChart'), {{
+  tryChart('cpkChart', {{
     type: 'bar',
     data: {{
       labels: items.map(function(c){{return c.name.length>45?c.name.slice(0,45)+'...':c.name;}}),
@@ -1061,7 +1173,7 @@ function showDist(pname) {{
   failV.forEach(function(v){{var i=Math.min(Math.floor((v-mn)/bw),BINS-1);fBins[i]++;}});
   var lbls = bins.map(function(_,i){{return fmt(mn+i*bw+bw/2,2);}});
   if(dHistInst) dHistInst.destroy();
-  dHistInst = new Chart(document.getElementById('distHist'), {{
+  dHistInst = tryChart('distHist', {{
     type: 'bar',
     data: {{
       labels: lbls,

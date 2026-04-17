@@ -944,7 +944,18 @@ class LocalAnalysisTab:
                 '输出文件夹将仅使用时间标签命名。\n'
                 '（预期结构：工站文件夹 → TestResult → 产品类别 → 工站类型 → …）'
             ))
-        run_folder = f'{product_prefix}_{run_ts}' if product_prefix else run_ts
+        _MODE_SHORT = {
+            'latest_pass':   'LP',
+            'folder_direct': 'FD',
+            'all_pass':      'AP',
+            'all_with_fail': 'AWF',
+            'fail_only':     'FO',
+        }
+        mode_tag = _MODE_SHORT.get(cpk_mode, cpk_mode)
+        if product_prefix:
+            run_folder = f'{product_prefix}_{mode_tag}_{run_ts}'
+        else:
+            run_folder = f'{mode_tag}_{run_ts}'
         out_dir = os.path.join(out_dir, run_folder)
         os.makedirs(out_dir, exist_ok=True)
         log_filename = f'analysis_log_{run_ts}.txt'
@@ -1138,6 +1149,7 @@ class LocalAnalysisTab:
                         title=product_name,
                         generated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                         fail_data=fail_data,
+                        log_cb=_log,
                     )
                     _log(f'  综合报告: {comp_path}  '
                          f'({os.path.getsize(comp_path) // 1024} KB)')
@@ -1176,7 +1188,20 @@ class LocalAnalysisTab:
                     self._set_progress(0, '已中止')
                     return
                 total_extracted = sum(len(v['results']) for v in extraction_summary.values())
-                _log(f'\n  共提取 {total_extracted} 条 pass 记录')
+                total_xlsx = sum(
+                    sum(1 for r in v['results'] if r.get('xlsx'))
+                    for v in extraction_summary.values()
+                )
+                total_json = sum(
+                    sum(1 for r in v['results'] if r.get('json'))
+                    for v in extraction_summary.values()
+                )
+                _log(f'\n  共提取 {total_extracted} 条 pass 记录'
+                     f'  (xlsx: {total_xlsx}, json: {total_json})')
+                if total_xlsx != total_json:
+                    _log(f'  [注意] xlsx与json数量不一致'
+                         f'（差异 {abs(total_xlsx - total_json)} 个条码），'
+                         f'详见 duplicate_barcodes.xlsx → "xlsx_json不一致" Sheet')
 
                 # ── Duplicate barcode report ───────────────────────────
                 _log('\n' + '=' * 56)
@@ -1320,7 +1345,8 @@ class LocalAnalysisTab:
                 except OSError:
                     file_count = 0
 
-                _log(f'\n  工站 [{stype}]  —  共 {file_count} 个{ext}文件')
+                _log(f'\n  工站 [{stype}]  —  共 {file_count} 个{ext}文件'
+                     f'  目录: {analysis_dir}')
                 self._set_progress(
                     62 + 28 * idx / max(len(station_list), 1),
                     f'CPK 分析: {stype} ({idx+1}/{len(station_list)})'
@@ -1330,12 +1356,34 @@ class LocalAnalysisTab:
                 else:
                     station_result = analyze_xlsx_folder(analysis_dir, log_cb=_log)
                 if station_result:
+                    n_sheets = len(station_result)
+                    n_pts = sum(len(pts) for pts in station_result.values())
+                    n_vals = sum(
+                        sum(len(s.get('values') or []) for s in pts.values())
+                        for pts in station_result.values()
+                    )
                     all_analysis[stype] = station_result
+                    _log(f'  [OK] [{stype}] CPK结果: {n_sheets}个Sheet, '
+                         f'{n_pts}个测试项, {n_vals}个测量值')
                 else:
-                    _log(f'  [WARN] 工站 [{stype}] 无可分析数据')
+                    _log(f'  [WARN] 工站 [{stype}] 无可分析数据 '
+                         f'(文件数={file_count}, 目录={analysis_dir})')
 
             if not all_analysis:
-                _log('[WARN] 所有工站均无可分析的 xlsx 数据，HTML 报告将为空')
+                _log('[WARN] 所有工站均无可分析的数据，HTML 报告将为空')
+                _log('[诊断] 可能原因：')
+                _log('[诊断]   1. 输出目录中没有 xlsx/json 文件（提取步骤失败？）')
+                _log('[诊断]   2. 所有测试项标准差=0（同一测量值反复出现）')
+                _log('[诊断]   3. 所有测试项样本数 n<2（文件数量不足）')
+                for stype in station_list:
+                    adir = extraction_summary[stype].get(
+                        'json_dir' if file_type == 'json' else 'xlsx_dir', '')
+                    try:
+                        ext = '.json' if file_type == 'json' else '.xlsx'
+                        cnt = len([f for f in os.listdir(adir) if f.lower().endswith(ext)])
+                        _log(f'[诊断]   [{stype}] 分析目录文件数: {cnt}  ({adir})')
+                    except Exception as e:
+                        _log(f'[诊断]   [{stype}] 读取分析目录失败: {e}  ({adir})')
 
             # ── Step 5: generate HTML report ───────────────────────────
             _log('\n' + '=' * 56)
@@ -1371,11 +1419,14 @@ class LocalAnalysisTab:
                     output_path=comp_path,
                     title=product_name,
                     generated_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    log_cb=_log,
                 )
                 _log(f'  综合报告: {comp_path}  '
                      f'({os.path.getsize(comp_path) // 1024} KB)')
             except Exception as exc:
+                import traceback as _tb2
                 _log(f'  [ERROR] 综合报告生成失败: {exc}')
+                _log(_tb2.format_exc())
                 comp_path = report_path
 
             # ── Step 6: fault analysis (optional) ─────────────────────

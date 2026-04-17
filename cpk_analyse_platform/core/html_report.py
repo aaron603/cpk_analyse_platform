@@ -197,6 +197,9 @@ function onSearch(stationType, sheetName) {{
   table.querySelectorAll('.cpk-col').forEach(el => {{
     el.style.display = showCpk ? '' : 'none';
   }});
+  table.querySelectorAll('.pass-rate-col').forEach(el => {{
+    el.style.display = showCpk ? '' : 'none';
+  }});
 
   const panelId = 'shpanel_' + escId(stationType) + '_' + escId(sheetName);
   const panel = document.getElementById(panelId);
@@ -646,9 +649,9 @@ def _build_sheet_panel(stype: str, sheet: str, points: dict, visible: bool) -> s
             else:
                 _rs = 'color:#c62828;font-weight:bold'
                 _rv = f'{_rate:.1f}%'
-            pass_rate_cell = f'<td style="{_rs}">{_rv}</td>'
+            pass_rate_cell = f'<td class="pass-rate-col" style="display:none;{_rs}">{_rv}</td>'
         else:
-            pass_rate_cell = '<td>-</td>'
+            pass_rate_cell = '<td class="pass-rate-col" style="display:none">-</td>'
 
         rows_html += f'''<tr data-point="{pname}" onclick="onRowClick('{_esc_js(stype)}','{_esc_js(sheet)}','{_esc_js(pname)}')" style="cursor:pointer">
   <td>{pname}</td>
@@ -699,7 +702,7 @@ def _build_sheet_panel(stype: str, sheet: str, points: dict, visible: bool) -> s
         <tr>
           <th>测试子项目</th>
           <th>样本数</th>
-          <th>通过率</th>
+          <th class="pass-rate-col" style="display:none">通过率</th>
           <th>均值</th>
           <th>标准差</th>
           <th>最小值</th>

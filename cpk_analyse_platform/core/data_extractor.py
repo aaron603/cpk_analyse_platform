@@ -815,11 +815,14 @@ def generate_duplicate_report(summary: dict, output_path: str, log_cb=None) -> s
         # Summary row
         sum_row = len(sorted_dups) + 2
         total_rec = sum(len(ts) for ts in duplicates.values())
+        xlsx_n = sum(1 for r in results if r.get('xlsx'))
+        json_n = sum(1 for r in results if r.get('json'))
         ws.cell(row=sum_row, column=1, value='汇总').font = SUM_FONT
         ws.cell(row=sum_row, column=1).fill      = SUM_FILL
         ws.cell(row=sum_row, column=1).alignment = CENTER
         summary_text = (
             f'工站 [{stype}]  总提取记录: {len(results)}'
+            f'  (xlsx: {xlsx_n}, json: {json_n})'
             f'  |  重复条码数: {len(duplicates)}'
             f'  |  重复记录总数: {total_rec}'
         )
@@ -835,7 +838,190 @@ def generate_duplicate_report(summary: dict, output_path: str, log_cb=None) -> s
             ws.cell(row=sum_row, column=col_idx).border = BORDER
 
         _log(f'  [重复报表] 工站 [{stype}]: 重复条码 {len(duplicates)} 个，'
-             f'共 {total_rec} 条重复记录')
+             f'共 {total_rec} 条重复记录  |  xlsx文件: {xlsx_n}  json文件: {json_n}')
+
+    # ── Sheet: xlsx_json不一致 ──────────────────────────────────────────────
+    MISMATCH_FILL_XLSX = PatternFill('solid', fgColor='E3F2FD')  # xlsx-only: blue tint
+    MISMATCH_FILL_JSON = PatternFill('solid', fgColor='F3E5F5')  # json-only: purple tint
+
+    mismatch_rows = []
+    for stype, info in summary.items():
+        results = info.get('results', [])
+        for r in results:
+            has_xlsx = bool(r.get('xlsx'))
+            has_json = bool(r.get('json'))
+            if has_xlsx and not has_json:
+                mismatch_rows.append((r['barcode'], stype, '有xlsx，无json', ''))
+            elif has_json and not has_xlsx:
+                mismatch_rows.append((r['barcode'], stype, '有json，无xlsx', ''))
+
+    if mismatch_rows:
+        ws_m = wb.create_sheet(title='xlsx_json不一致')
+        COLS_M = [('PrdSN', 24), ('工站类型', 12), ('不一致类型', 20), ('备注', 30)]
+        for ci, (cname, cw) in enumerate(COLS_M, 1):
+            c = ws_m.cell(row=1, column=ci, value=cname)
+            c.fill = HDR_FILL; c.font = HDR_FONT
+            c.alignment = CENTER; c.border = BORDER
+            ws_m.column_dimensions[get_column_letter(ci)].width = cw
+        ws_m.row_dimensions[1].height = 20
+        ws_m.freeze_panes = 'A2'
+
+        for ri, (bc, stype, mis_type, note) in enumerate(mismatch_rows, 2):
+            row_fill = (MISMATCH_FILL_XLSX if '有xlsx' in mis_type
+                        else MISMATCH_FILL_JSON)
+            for ci, val in enumerate([bc, stype, mis_type, note], 1):
+                c = ws_m.cell(row=ri, column=ci, value=val)
+                c.fill = row_fill; c.border = BORDER
+                c.font = Font(size=10)
+                c.alignment = LEFT_WRAP if ci == 1 else CENTER
+
+        sum_r = len(mismatch_rows) + 2
+        xlsx_only_cnt = sum(1 for _, _, t, _ in mismatch_rows if '有xlsx' in t)
+        json_only_cnt = len(mismatch_rows) - xlsx_only_cnt
+        ws_m.cell(row=sum_r, column=1, value='汇总').font = SUM_FONT
+        ws_m.cell(row=sum_r, column=1).fill = SUM_FILL
+        ws_m.cell(row=sum_r, column=1).alignment = CENTER
+        mis_summary = (f'共 {len(mismatch_rows)} 个条码不一致'
+                       f'  |  有xlsx无json: {xlsx_only_cnt}'
+                       f'  |  有json无xlsx: {json_only_cnt}')
+        c = ws_m.cell(row=sum_r, column=2, value=mis_summary)
+        c.font = SUM_FONT; c.fill = SUM_FILL; c.alignment = LEFT_WRAP
+        ws_m.merge_cells(start_row=sum_r, start_column=2,
+                         end_row=sum_r, end_column=len(COLS_M))
+        for ci in range(1, len(COLS_M) + 1):
+            ws_m.cell(row=sum_r, column=ci).border = BORDER
+
+        _log(f'  [xlsx_json不一致] 共 {len(mismatch_rows)} 个条码不一致'
+             f'（有xlsx无json: {xlsx_only_cnt}，有json无xlsx: {json_only_cnt}）')
+    else:
+        _log('  [xlsx_json对比] 所有条码xlsx与json文件均一一对应，无不一致')
+
+    # ── Sheets: 不完整测试条码 / 完整测试条码 ──────────────────────────────
+    try:
+        from core.cpk_calculator import analyze_xlsx_completeness as _check_complete
+    except ImportError:
+        try:
+            from cpk_calculator import analyze_xlsx_completeness as _check_complete
+        except ImportError:
+            _check_complete = None
+
+    if _check_complete:
+        COMPLETE_FILL   = PatternFill('solid', fgColor='E8F5E9')  # green
+        INCOMPL_FILL    = PatternFill('solid', fgColor='FFF8E1')  # yellow
+        MISSING_FILL    = PatternFill('solid', fgColor='FFEBEE')  # red
+
+        all_incomplete_rows = []   # (barcode, stype, sheet, pname, present_n, ref_n, fname)
+        all_complete_rows   = []   # (barcode, stype, n_items, fname)
+
+        for stype, info in summary.items():
+            xlsx_dir = info.get('xlsx_dir', '')
+            if not xlsx_dir or not os.path.isdir(xlsx_dir):
+                continue
+            comp = _check_complete(xlsx_dir, log_cb=_log)
+            ref_n = len(comp['reference_set'])
+
+            for item in comp['complete']:
+                all_complete_rows.append(
+                    (item['barcode'], stype, item['n_items'], item['filename'])
+                )
+            for item in comp['incomplete']:
+                for (sheet_name, pname) in item['missing']:
+                    all_incomplete_rows.append((
+                        item['barcode'], stype,
+                        sheet_name, pname,
+                        item['present_n'], ref_n,
+                        item['filename'],
+                    ))
+
+        # ── Sheet: 不完整测试条码 ────────────────────────────────────────────
+        if all_incomplete_rows:
+            ws_inc = wb.create_sheet(title='不完整测试条码')
+            COLS_INC = [
+                ('PrdSN',         24), ('工站',         10),
+                ('测试大项',       28), ('缺失测试子项',  30),
+                ('已有子项数',     12), ('参考完整子项数', 14),
+                ('文件名',         36),
+            ]
+            for ci, (cname, cw) in enumerate(COLS_INC, 1):
+                c = ws_inc.cell(row=1, column=ci, value=cname)
+                c.fill = HDR_FILL; c.font = HDR_FONT
+                c.alignment = CENTER; c.border = BORDER
+                ws_inc.column_dimensions[get_column_letter(ci)].width = cw
+            ws_inc.row_dimensions[1].height = 20
+            ws_inc.freeze_panes = 'A2'
+
+            # Sort: most missing items first, then by barcode
+            from collections import Counter as _Ctr
+            bc_miss_cnt = _Ctr(r[0] for r in all_incomplete_rows)
+            all_incomplete_rows.sort(
+                key=lambda r: (-bc_miss_cnt[r[0]], r[0], r[2], r[3])
+            )
+
+            for ri, (bc, st, sh, pn, pres, ref, fn) in enumerate(
+                    all_incomplete_rows, 2):
+                for ci, val in enumerate(
+                        [bc, st, sh, pn, pres, ref, fn], 1):
+                    c = ws_inc.cell(row=ri, column=ci, value=val)
+                    c.fill = MISSING_FILL if ci == 4 else INCOMPL_FILL
+                    c.border = BORDER
+                    c.font = Font(size=10)
+                    c.alignment = (LEFT_WRAP if ci in (1, 3, 4, 7) else CENTER)
+
+            inc_bc_cnt = len(set(r[0] for r in all_incomplete_rows))
+            sum_r = len(all_incomplete_rows) + 2
+            ws_inc.cell(row=sum_r, column=1, value='汇总').font = SUM_FONT
+            ws_inc.cell(row=sum_r, column=1).fill = SUM_FILL
+            ws_inc.cell(row=sum_r, column=1).alignment = CENTER
+            inc_txt = (f'共 {inc_bc_cnt} 个条码/测试文件存在缺失子项'
+                       f'  |  共 {len(all_incomplete_rows)} 条缺失记录')
+            c = ws_inc.cell(row=sum_r, column=2, value=inc_txt)
+            c.font = SUM_FONT; c.fill = SUM_FILL; c.alignment = LEFT_WRAP
+            ws_inc.merge_cells(start_row=sum_r, start_column=2,
+                               end_row=sum_r, end_column=len(COLS_INC))
+            for ci in range(1, len(COLS_INC) + 1):
+                ws_inc.cell(row=sum_r, column=ci).border = BORDER
+
+            _log(f'  [不完整条码] 共 {inc_bc_cnt} 个条码/文件存在测试子项缺失'
+                 f'，{len(all_incomplete_rows)} 条缺失记录')
+        else:
+            _log('  [完整性检查] 所有条码测试子项均完整，无缺失')
+
+        # ── Sheet: 完整测试条码 ──────────────────────────────────────────────
+        if all_complete_rows:
+            ws_comp = wb.create_sheet(title='完整测试条码')
+            COLS_COMP = [
+                ('PrdSN',    24), ('工站',     10),
+                ('子项总数', 12), ('文件名',   36),
+            ]
+            for ci, (cname, cw) in enumerate(COLS_COMP, 1):
+                c = ws_comp.cell(row=1, column=ci, value=cname)
+                c.fill = HDR_FILL; c.font = HDR_FONT
+                c.alignment = CENTER; c.border = BORDER
+                ws_comp.column_dimensions[get_column_letter(ci)].width = cw
+            ws_comp.row_dimensions[1].height = 20
+            ws_comp.freeze_panes = 'A2'
+
+            all_complete_rows.sort(key=lambda r: (r[1], r[0]))  # sort by stype, barcode
+            for ri, (bc, st, n_items, fn) in enumerate(all_complete_rows, 2):
+                for ci, val in enumerate([bc, st, n_items, fn], 1):
+                    c = ws_comp.cell(row=ri, column=ci, value=val)
+                    c.fill = COMPLETE_FILL; c.border = BORDER
+                    c.font = Font(size=10)
+                    c.alignment = LEFT_WRAP if ci in (1, 4) else CENTER
+
+            sum_r = len(all_complete_rows) + 2
+            ws_comp.cell(row=sum_r, column=1, value='汇总').font = SUM_FONT
+            ws_comp.cell(row=sum_r, column=1).fill = SUM_FILL
+            ws_comp.cell(row=sum_r, column=1).alignment = CENTER
+            c = ws_comp.cell(row=sum_r, column=2,
+                             value=f'共 {len(all_complete_rows)} 个条码/文件测试子项完整')
+            c.font = SUM_FONT; c.fill = SUM_FILL; c.alignment = LEFT_WRAP
+            ws_comp.merge_cells(start_row=sum_r, start_column=2,
+                                end_row=sum_r, end_column=len(COLS_COMP))
+            for ci in range(1, len(COLS_COMP) + 1):
+                ws_comp.cell(row=sum_r, column=ci).border = BORDER
+
+            _log(f'  [完整条码] 共 {len(all_complete_rows)} 个条码/文件测试子项完整')
 
     if not wb.sheetnames:
         ws = wb.create_sheet(title='无重复条码')
@@ -1043,7 +1229,18 @@ def run_extraction_all_pass(
             if progress_cb:
                 progress_cb(i + 1, total, barcode)
 
+        xlsx_backed_n = sum(1 for r in results if r.get('xlsx'))
+        json_backed_n = sum(1 for r in results if r.get('json'))
+        both_n        = sum(1 for r in results if r.get('xlsx') and r.get('json'))
+        xlsx_only_n   = sum(1 for r in results if r.get('xlsx') and not r.get('json'))
+        json_only_n   = sum(1 for r in results if r.get('json') and not r.get('xlsx'))
+
         _log(f'\n[汇总] 工站 [{stype}]  成功复制: {ok_n} 条  |  复制错误: {err_n} 条')
+        _log(f'       xlsx文件: {xlsx_backed_n}  |  json文件: {json_backed_n}'
+             f'  |  均有: {both_n}  |  仅xlsx: {xlsx_only_n}  |  仅json: {json_only_n}')
+        if xlsx_only_n or json_only_n:
+            _log(f'  [注意] 有 {xlsx_only_n + json_only_n} 个条码xlsx与json文件不对应，'
+                 f'详见重复条码报表"xlsx_json不一致"Sheet')
 
         summary[stype] = {
             'xlsx_dir': xlsx_out,
