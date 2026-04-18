@@ -1,8 +1,8 @@
-# 产线数据分析AI平台 — 需求说明文档 v2.2
+# 产线数据分析AI平台 — 需求说明文档 v2.3
 
 **项目**：Zillnk Efficiency Improvement Group — 产线数据分析AI平台  
 **代码目录**：`D:\Gitlab\cpk_analyse_platform`  
-**更新日期**：2026-04-17
+**更新日期**：2026-04-18
 
 ---
 
@@ -402,7 +402,13 @@ rules:
 
 ### 6.1 综合报告（`comprehensive_report.html`）
 
-由 `core/html_comprehensive_report.py` → `generate_comprehensive_report()` 生成，使用 Chart.js（需浏览器访问 cdn.jsdelivr.net）。
+由 `core/html_comprehensive_report.py` → `generate_comprehensive_report()` 生成。
+
+**Chart.js 离线内嵌**：Chart.js 4.4.0（`core/assets/chart.umd.min.js`）在生成时直接写入 HTML，**无需访问外网**，适合无网络的工厂环境。若本地资源文件缺失则自动降级为 CDN 引用。
+
+**大数据分页加载（懒加载）**：
+- 主脚本块仅包含核心统计数据（~100 KB），页面打开即可显示
+- 故障回放明细（`SN_DETAIL`，每次分析约 3–4 MB）和数据分布原始值（`dist_data`，约 500 KB）以 `<script type="application/json">` 方式存储，仅在用户首次点击对应 Tab 时解析，不阻塞初始渲染
 
 **6 个 Tab 内容**：
 
@@ -411,11 +417,12 @@ rules:
 | 总览 | KPI卡片（总样本量/整体良率/失败条码数/CPK达标率）、良率趋势折线、失败类型饼图、测试大类汇总表 |
 | 失败分析 | Top 25 高频失败测试项柱图（点击可查看明细）、失败记录明细表（含SN搜索） |
 | CPK分析 | Cpk 横向柱图（色标分级 <1.0红/1.0-1.33橙/≥1.33绿）、完整 CPK 统计表（含搜索） |
-| 数据分布 | 按测试项切换的堆叠直方图（pass蓝/fail红）、统计面板（n/均值/σ/LSL/USL） |
+| 数据分布 | 按测试项切换的堆叠直方图（pass蓝/fail红）、统计面板（n/均值/σ/LSL/USL）；首次点击时加载原始值 |
 | 失败模式 | 失败类型统计卡片、按小时热图（时序分布）、多失败项SN分析 |
-| 故障回放 | 左侧SN列表（可搜索/过滤状态）、右侧逐Sheet展开测试结果 |
+| 故障回放 | 左侧SN列表（可搜索/过滤状态）、右侧逐Sheet展开测试结果；首次点击时加载明细数据 |
 
 - `fail_data` 参数有值时（`folder_direct` 模式），图表含 fail 着色；否则全 pass 数据
+- 非 `folder_direct` 模式下，`never_pass_list` 和 `fault_type_list` 由测量值推导合成
 - 自动在分析完成后 0.8 秒用默认浏览器打开
 
 ### 6.2 CPK 专项报告（`cpk_report.html`）
@@ -626,6 +633,8 @@ cpk_analyse_platform/
                                  CPKAnalysisPlatform（主窗口类，F11全屏）
   gen_ppt.py                     架构说明PPT生成脚本（基于公司模板，9页，红白配色）
   core/
+    assets/
+      chart.umd.min.js           Chart.js 4.4.0 离线资源（205 KB，内嵌至综合报告 HTML）
     data_extractor.py            run_extraction(mode)          — latest_pass/all/fail_only
                                  run_extraction_all_pass()     — 全部pass记录遍历
                                  run_extraction_traverse()     — folder_direct全量遍历（pass+fail）
