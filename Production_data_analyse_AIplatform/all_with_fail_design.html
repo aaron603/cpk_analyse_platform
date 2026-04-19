@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>all_with_fail 模式设计方案 — CPK分析平台</title>
+<style>
+  :root {
+    --primary: #1a73e8;
+    --accent:  #34a853;
+    --warn:    #ea4335;
+    --purple:  #9c27b0;
+    --bg:      #f8f9fa;
+    --card:    #ffffff;
+    --border:  #e0e0e0;
+    --text:    #202124;
+    --muted:   #5f6368;
+    --code-bg: #f1f3f4;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Microsoft YaHei", "Segoe UI", sans-serif; background: var(--bg); color: var(--text); line-height: 1.7; }
+  a { color: var(--primary); text-decoration: none; }
+
+  /* ── Header ── */
+  header { background: linear-gradient(135deg, #1a73e8 0%, #0d47a1 100%); color: #fff; padding: 48px 40px 36px; }
+  header h1 { font-size: 28px; font-weight: 700; margin-bottom: 8px; }
+  header p  { font-size: 15px; opacity: .85; }
+  .badge { display: inline-block; background: rgba(255,255,255,.2); border-radius: 20px; padding: 3px 12px; font-size: 12px; margin-top: 12px; margin-right: 8px; }
+
+  /* ── Layout ── */
+  .container { max-width: 1100px; margin: 0 auto; padding: 32px 24px 64px; }
+  .section { margin-bottom: 40px; }
+  h2 { font-size: 20px; font-weight: 700; color: var(--text); border-left: 4px solid var(--primary); padding-left: 12px; margin-bottom: 20px; margin-top: 40px; }
+  h3 { font-size: 15px; font-weight: 700; color: var(--primary); margin: 18px 0 10px; }
+  p  { margin-bottom: 10px; color: var(--text); font-size: 14px; }
+
+  /* ── Cards ── */
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px 24px; margin-bottom: 16px; box-shadow: 0 1px 4px rgba(0,0,0,.06); }
+  .card-title { font-weight: 700; font-size: 14px; margin-bottom: 8px; }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+
+  /* ── Status pills ── */
+  .pill { display: inline-block; border-radius: 4px; padding: 2px 8px; font-size: 12px; font-weight: 600; margin-right: 4px; }
+  .pill-green  { background: #e6f4ea; color: #137333; }
+  .pill-blue   { background: #e8f0fe; color: #1558d6; }
+  .pill-orange { background: #fef7e0; color: #b06000; }
+  .pill-red    { background: #fce8e6; color: #c5221f; }
+  .pill-purple { background: #f3e8fd; color: #7b1fa2; }
+  .pill-gray   { background: #f1f3f4; color: #5f6368; }
+
+  /* ── Flow diagram (CSS-based) ── */
+  .flow { display: flex; align-items: flex-start; gap: 0; overflow-x: auto; padding: 12px 0; }
+  .flow-step { display: flex; flex-direction: column; align-items: center; min-width: 130px; }
+  .flow-box {
+    background: var(--primary); color: #fff; border-radius: 8px;
+    padding: 10px 14px; font-size: 12px; font-weight: 600; text-align: center;
+    width: 120px; min-height: 90px; display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 2px 6px rgba(26,115,232,.3); flex-direction: column;
+  }
+  .flow-box.green  { background: #34a853; box-shadow: 0 2px 6px rgba(52,168,83,.3); }
+  .flow-box.orange { background: #f9ab00; color: #202124; box-shadow: 0 2px 6px rgba(249,171,0,.3); }
+  .flow-box.red    { background: #ea4335; box-shadow: 0 2px 6px rgba(234,67,53,.3); }
+  .flow-box.purple { background: #9c27b0; box-shadow: 0 2px 6px rgba(156,39,176,.3); }
+  .flow-arrow { display: flex; align-items: center; padding: 0 6px; color: var(--muted); font-size: 20px; padding-top: 14px; }
+  .flow-label { font-size: 11px; color: var(--muted); margin-top: 6px; text-align: center; max-width: 140px; }
+
+  /* ── Table ── */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 16px; }
+  th { background: #f1f3f4; font-weight: 600; padding: 8px 12px; text-align: left; border-bottom: 2px solid var(--border); }
+  td { padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  tr:last-child td { border-bottom: none; }
+
+  /* ── Code ── */
+  pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px; padding: 14px 16px; font-family: "Consolas", "Courier New", monospace; font-size: 12px; overflow-x: auto; margin: 10px 0; white-space: pre; }
+  code { font-family: "Consolas", "Courier New", monospace; background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+
+  /* ── Gap analysis ── */
+  .gap-list { list-style: none; }
+  .gap-list li { padding: 8px 0 8px 28px; border-bottom: 1px solid var(--border); font-size: 14px; position: relative; }
+  .gap-list li:last-child { border-bottom: none; }
+  .gap-list li::before { content: "✗"; position: absolute; left: 0; color: var(--warn); font-weight: 700; }
+  .gap-list li.ok::before { content: "✓"; color: var(--accent); }
+
+  /* ── Phase timeline ── */
+  .timeline { position: relative; padding-left: 28px; }
+  .timeline::before { content: ""; position: absolute; left: 10px; top: 0; bottom: 0; width: 2px; background: var(--border); }
+  .t-item { position: relative; margin-bottom: 24px; }
+  .t-dot { position: absolute; left: -23px; top: 4px; width: 14px; height: 14px; border-radius: 50%; background: var(--primary); border: 2px solid #fff; box-shadow: 0 0 0 2px var(--primary); }
+  .t-dot.green  { background: var(--accent);  box-shadow: 0 0 0 2px var(--accent); }
+  .t-dot.orange { background: #f9ab00;        box-shadow: 0 0 0 2px #f9ab00; }
+  .t-dot.purple { background: var(--purple);  box-shadow: 0 0 0 2px var(--purple); }
+  .t-title { font-weight: 700; font-size: 14px; margin-bottom: 6px; }
+  .t-body  { font-size: 13px; color: var(--muted); }
+  .t-body li { margin-bottom: 4px; margin-left: 16px; }
+
+  /* ── Callout ── */
+  .callout { border-left: 4px solid var(--primary); background: #e8f0fe; padding: 12px 16px; border-radius: 0 6px 6px 0; margin: 12px 0; font-size: 13px; }
+  .callout.green  { border-color: var(--accent);  background: #e6f4ea; }
+  .callout.orange { border-color: #f9ab00; background: #fef7e0; }
+  .callout.red    { border-color: var(--warn);   background: #fce8e6; }
+
+  /* ── Industry section ── */
+  .practice-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px; }
+  .practice-card h4 { font-size: 14px; font-weight: 700; margin-bottom: 8px; }
+  .practice-card p { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  .practice-card .apply { font-size: 12px; color: var(--primary); font-weight: 600; margin-top: 8px; border-top: 1px solid var(--border); padding-top: 8px; }
+
+  /* ── Bilingual English sub-line ── */
+  .en { display: block; font-size: 11px; color: #999; font-style: italic; font-weight: normal; margin-top: 2px; line-height: 1.3; }
+  h2 .en { font-size: 12px; margin-top: 3px; }
+  h3 .en { font-size: 11px; }
+
+  @media (max-width: 720px) {
+    .grid-2, .grid-3 { grid-template-columns: 1fr; }
+    .flow { flex-wrap: wrap; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>「所有数据（含失败）」分析模式 — 设计方案<br><span style="font-size:18px;font-weight:400;opacity:.85">"All Data (incl. Failures)" Analysis Mode — Design Proposal</span></h1>
+  <p>CPK分析平台 · Zillnk Efficiency Improvement Group</p>
+  <span class="badge">设计讨论稿 / Design Draft</span>
+  <span class="badge">2026-04-15</span>
+  <span class="badge">all_with_fail mode v1.0</span>
+</header>
+
+<div class="container">
+
+<!-- ═══════════════════════════════════════════════════════════
+     §1 背景与目标
+═══════════════════════════════════════════════════════════ -->
+<h2>一、背景与设计目标<span class="en">Ⅰ. Background &amp; Design Goals</span></h2>
+<div class="grid-2">
+  <div class="card">
+    <div class="card-title">💡 核心诉求<span class="en">Core Requirements</span></div>
+    <p>在"所有数据（含失败）"模式下，不仅要分析 CPK 统计数据，更要：<br>
+    <span class="en">In "all data (incl. failures)" mode, beyond CPK statistics we also need to:</span></p>
+    <ul style="font-size:13px;padding-left:20px;color:var(--muted)">
+      <li>自动发现所有<b>失败条码</b>（含测试不完整的情况）<span class="en">Auto-detect all <b>failed barcodes</b> (incl. incomplete tests)</span></li>
+      <li>为每个失败条码寻找其<b>对应 pass 记录</b><span class="en">Find the matching <b>pass record</b> for each failed barcode</span></li>
+      <li>对 pass/fail 记录的<b>测试测量值</b>做差异比对<span class="en">Diff <b>measured values</b> between pass and fail records</span></li>
+      <li>结合<b>用户定期输入的故障关联描述</b>持续更新故障关系库<span class="en">Continuously update the fault rule base with <b>engineer-supplied knowledge</b></span></li>
+      <li>生成<b>可人工查阅和维护</b>的故障分析关联关系<span class="en">Generate <b>human-readable, maintainable</b> fault association reports</span></li>
+    </ul>
+  </div>
+  <div class="card">
+    <div class="card-title">🎯 终极目标<span class="en">Ultimate Goal</span></div>
+    <p>构建一个<b>自我成长的故障知识库</b>：<br>
+    <span class="en">Build a <b>self-growing fault knowledge base</b>:</span></p>
+    <ul style="font-size:13px;padding-left:20px;color:var(--muted)">
+      <li>每次分析 → 自动提取故障模式 → 更新规则库<span class="en">Each analysis → auto-extract fault patterns → update rules</span></li>
+      <li>工程师经验 → YAML 文件 → 转化为规则，持续积累<span class="en">Engineer knowledge → YAML file → rules, accumulate continuously</span></li>
+      <li>同一条码跨站/跨次数据 → 暴露环境差异、工装差异<span class="en">Same barcode cross-station data → exposes fixture / environment differences</span></li>
+      <li>历史数据 + 新数据 = 越来越精准的故障分类能力<span class="en">Historical + new data = increasingly accurate fault classification</span></li>
+    </ul>
+    <div class="callout green" style="margin-top:12px">
+      本质上是一套轻量级<b>FDC（故障检测与分类）</b>系统，聚焦 RRU/PA 产线场景。<span class="en">Essentially a lightweight <b>FDC (Fault Detection &amp; Classification)</b> system focused on RRU/PA production lines.</span>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     §2 现有基础
+═══════════════════════════════════════════════════════════ -->
+<h2>二、现有基础（已实现）<span class="en">Ⅱ. Existing Foundation (Implemented)</span></h2>
+<div class="callout green">已有相当扎实的基础，此模式是在现有架构上的<b>定向增强</b>，而非推倒重来。<span class="en">A solid foundation already exists — this mode is a <b>targeted enhancement</b> on the current architecture, not a rewrite.</span></div>
+
+<table>
+  <tr>
+    <th>模块<span class="en">Module</span></th><th>已有能力<span class="en">Existing Capability</span></th><th>与 all_with_fail 的关系<span class="en">Relation to all_with_fail</span></th>
+  </tr>
+  <tr>
+    <td><code>fault_db.py</code></td>
+    <td>
+      <span class="pill pill-green">fault_rules</span>
+      <span class="pill pill-blue">fault_records</span>
+      <span class="pill pill-gray">fault_stats</span><br>
+      16 类种子规则；CRUD API；迁移机制<span class="en" style="display:block">16 seed rule categories; CRUD API; migration mechanism</span>
+    </td>
+    <td>直接复用；新增 2 张表<span class="en">Reuse as-is; add 2 new tables</span></td>
+  </tr>
+  <tr>
+    <td><code>fault_analyzer.py</code></td>
+    <td>
+      <code>run_fault_analysis(mode='all'/'fail_only')</code><br>
+      目录遍历；log 解析；CRITICAL 行提取；设备错误检测；<br>
+      MEASUREMENT JSON；env_config.yml；Ollama LLM<span class="en">Dir traversal; log parsing; CRITICAL line extraction; device error detection; MEASUREMENT JSON; env_config.yml; Ollama LLM</span>
+    </td>
+    <td>基础遍历框架直接复用；<br>新增 pass/fail diff 逻辑<span class="en">Reuse traversal framework; add pass/fail diff logic</span></td>
+  </tr>
+  <tr>
+    <td><code>get_cross_station_barcodes()</code></td>
+    <td>已能查询同条码出现在多台设备的情况<span class="en">Can query barcodes appearing on multiple stations</span></td>
+    <td>直接用于识别跨站失败条码<span class="en">Directly used to identify cross-station failures</span></td>
+  </tr>
+  <tr>
+    <td><code>_generate_fail_patterns()</code></td>
+    <td>高频失败项 / 设备错误 / 未分类样本<span class="en">High-frequency failures / device errors / unclassified samples</span></td>
+    <td>作为规则推荐的数据源<span class="en">Data source for rule recommendations</span></td>
+  </tr>
+  <tr>
+    <td><code>main.py 工具菜单</code></td>
+    <td>已有「加载故障关系描述文件…」菜单入口（但尚未与 YAML 加载逻辑对接）<span class="en">Menu entry "Load Fault Relation File…" exists (not yet wired to backend)</span></td>
+    <td>接入用户知识输入的天然入口<span class="en">Natural entry point for user knowledge input</span></td>
+  </tr>
+</table>
+
+<h3>现有能力缺口<span class="en">Capability Gaps</span></h3>
+<ul class="gap-list">
+  <li><b>all 模式下 pass 记录只存最简字段</b> — 无测量值，无法做 diff 比对<span class="en"><b>In 'all' mode, pass records store only minimal fields</b> — no measurements, diff is impossible</span></li>
+  <li><b>无 pass/fail 差异比对逻辑</b> — 无函数、无数据结构<span class="en"><b>No pass/fail diff logic</b> — no function, no data structure</span></li>
+  <li><b>无 barcode_comparisons 表</b> — 比对结果无法持久化<span class="en"><b>No barcode_comparisons table</b> — diff results cannot be persisted</span></li>
+  <li><b>YAML 加载菜单入口存在，但后端未实现</b> — <code>load_knowledge_yaml()</code> 函数缺失<span class="en"><b>YAML load menu exists but backend unimplemented</b> — <code>load_knowledge_yaml()</code> missing</span></li>
+  <li><b>无知识更新历史记录</b> — 不知道哪批规则是从哪个文件导入的<span class="en"><b>No knowledge update history</b> — cannot trace which rules came from which file</span></li>
+  <li class="ok"><b>Ollama LLM 集成已就绪</b> — 可在 diff 分析中继续发挥作用<span class="en"><b>Ollama LLM integration is ready</b> — can be used in diff analysis</span></li>
+  <li class="ok"><b>跨站查询已就绪</b> — <code>get_cross_station_barcodes()</code><span class="en"><b>Cross-station query is ready</b> — <code>get_cross_station_barcodes()</code></span></li>
+</ul>
+
+<!-- ═══════════════════════════════════════════════════════════
+     §3 整体流程设计
+═══════════════════════════════════════════════════════════ -->
+<h2>三、整体处理流程<span class="en">Ⅲ. Overall Processing Flow</span></h2>
+
+<div class="card">
+<div style="overflow-x:auto">
+<div class="flow">
+  <div class="flow-step">
+    <div class="flow-box">① 直接遍历<br>工站文件夹<span class="en">① Scan Station Dirs</span></div>
+    <div class="flow-label">忽略发货Excel<br>全量扫描<span class="en">Skip Shipping Excel / Full Scan</span></div>
+  </div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-step">
+    <div class="flow-box red">② 识别失败<br>条码集合<span class="en">② Identify Failed Barcodes</span></div>
+    <div class="flow-label">完整/不完整<br>均纳入<span class="en">Complete &amp; Incomplete Included</span></div>
+  </div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-step">
+    <div class="flow-box green">③ 关联 Pass<br>记录<span class="en">③ Link Pass Records</span></div>
+    <div class="flow-label">同条码<br>跨站/跨次<span class="en">Same Barcode / Cross-Station</span></div>
+  </div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-step">
+    <div class="flow-box orange">④ Pass/Fail<br>差异比对<span class="en">④ Pass/Fail Diff</span></div>
+    <div class="flow-label">测量值 delta<br>方向/偏差量<span class="en">Measurement Delta / Direction</span></div>
+  </div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-step">
+    <div class="flow-box purple">⑤ 用户知识<br>融合<span class="en">⑤ Merge User Knowledge</span></div>
+    <div class="flow-label">YAML 规则<br>持续更新<span class="en">YAML Rules / Continuous Update</span></div>
+  </div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-step">
+    <div class="flow-box">⑥ 更新故障<br>关系库<span class="en">⑥ Update Fault DB</span></div>
+    <div class="flow-label">DB + 报告<br>可人工维护<span class="en">DB + Report / Human-Maintainable</span></div>
+  </div>
+</div>
+</div>
+</div>
+
+<div class="grid-2">
+  <div class="card">
+    <div class="card-title">① 遍历策略<span class="en">① Traversal Strategy</span></div>
+    <p>与 <code>all_pass</code> 模式类似，直接使用 <code>_iter_records(station_configs)</code> 遍历所有工站文件夹，不需要发货 Excel。<br>
+    <span class="en">Similar to <code>all_pass</code> mode — use <code>_iter_records(station_configs)</code> to traverse all station folders without needing the shipping Excel.</span></p>
+    <p><b>关键区别 / Key Difference</b>：<code>all_pass</code> 只取 pass 记录；<code>all_with_fail</code> 同时收集 <b>pass + fail + unknown</b> 全部记录。<br>
+    <span class="en"><code>all_pass</code> collects only pass records; <code>all_with_fail</code> collects <b>all</b> — pass + fail + unknown.</span></p>
+    <div class="callout orange">既然全部记录都要收集，pass 记录也需要提取测量数据（与现有 <code>all</code> 模式不同）。<span class="en">Since all records are collected, pass records must also extract measurement data (different from existing <code>all</code> mode).</span></div>
+  </div>
+  <div class="card">
+    <div class="card-title">② 失败条码识别<span class="en">② Failed Barcode Detection</span></div>
+    <p>失败场景分两类：<span class="en">Two failure scenarios:</span></p>
+    <table style="font-size:12px;margin-top:8px">
+      <tr><th>类型<span class="en">Type</span></th><th>识别方法<span class="en">Detection Method</span></th></tr>
+      <tr><td><span class="pill pill-red" title="Complete Test Failure">完整测试失败</span></td><td><code>Failed_points_*.txt</code> 存在，或 MEASUREMENT JSON <code>Result=Fail</code></td></tr>
+      <tr><td><span class="pill pill-orange" title="Incomplete Test">测试不完整</span></td><td>无 <code>Test_Result_*.xlsx</code>，有 log 但无最终结果；log 中有 <code>Traceback</code> / <code>exception</code></td></tr>
+    </table>
+    <p style="margin-top:8px;font-size:13px">两类均纳入分析，在报告中用不同颜色区分。<span class="en">Both types are included in analysis, differentiated by color in the report.</span></p>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     §4 Pass/Fail 差异比对设计
+═══════════════════════════════════════════════════════════ -->
+<h2>四、Pass / Fail 差异比对引擎<span class="en">Ⅳ. Pass / Fail Diff Engine</span></h2>
+
+<div class="callout">
+  这是 all_with_fail 模式最核心的新增能力，也是业界 FDC 系统的标志性特征。<span class="en">This is the most critical new capability of all_with_fail mode, and a hallmark feature of industry FDC systems.</span>
+</div>
+
+<div class="grid-2">
+  <div class="card">
+    <div class="card-title">数据来源<span class="en">Data Sources</span></div>
+    <h3>Fail 记录的测量值<span class="en">Fail Record Measurements</span></h3>
+    <ul style="font-size:13px;padding-left:20px;color:var(--muted)">
+      <li>已有：<code>_parse_critical_lines(log)</code> → <code>failed_items</code>（仅失败项）<span class="en">Existing: <code>_parse_critical_lines(log)</code> → <code>failed_items</code> (failed items only)</span></li>
+      <li>需增加：<code>_extract_all_measurements(log)</code> → 提取全部测试项的 data/limit 对<span class="en">New: <code>_extract_all_measurements(log)</code> → extract data/limit pairs for all test items</span></li>
+      <li>补充源：<code>*_MEASUREMENT_Zillnk.json</code> 的 <code>TestResult[].TestPoints[]</code></li>
+    </ul>
+    <h3>Pass 记录的测量值<span class="en">Pass Record Measurements</span></h3>
+    <ul style="font-size:13px;padding-left:20px;color:var(--muted)">
+      <li><code>Test_Result_*.xlsx</code>（<code>point_name</code> + <code>data</code> + <code>limit_low/high</code>）</li>
+      <li><code>*_MEASUREMENT_Zillnk.json</code> 的 TestPoints（统一格式）<span class="en">TestPoints from <code>*_MEASUREMENT_Zillnk.json</code> (unified format)</span></li>
+    </ul>
+  </div>
+  <div class="card">
+    <div class="card-title">diff 算法<span class="en">Diff Algorithm</span></div>
+    <pre style="margin:0;font-size:11px">def _diff_pass_fail(pass_items, fail_items):
+    """
+    pass_items: {item_name: value}
+    fail_items: {item_name: value}
+    返回 / Returns: [{
+      item, fail_val, pass_val,
+      lsl, usl,
+      delta,         # fail_val - pass_val
+      direction,     # 'degraded_high'/'degraded_low'/'na'
+      severity       # 'critical'(超限/over-limit)/'warn'(>50%范围)/'ok'
+    }]
+    """</pre>
+    <p style="font-size:13px;margin-top:8px"><b>优先级 / Priority</b>：仅输出有差异（delta 不为 0）的项，按 |delta| 降序排列，最多保留 Top 20。<br>
+    <span class="en">Output only items with delta ≠ 0, sorted by |delta| descending, top 20 max.</span></p>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">比对逻辑示意（同一条码，Fail vs Pass）<span class="en">Comparison Example (same barcode, Fail vs Pass)</span></div>
+  <table>
+    <tr>
+      <th>测试项<span class="en">Test Item</span></th><th>Pass 值<span class="en">Pass Value</span></th><th>Fail 值<span class="en">Fail Value</span></th><th>LSL</th><th>USL</th><th>Delta</th><th>判断<span class="en">Verdict</span></th>
+    </tr>
+    <tr>
+      <td>RX NF ORBI 3600M</td><td>4.2 dB</td><td>8.7 dB</td><td>—</td><td>6.0 dB</td><td style="color:var(--warn)">+4.5 dB</td>
+      <td><span class="pill pill-red" title="Exceeds Limit ↑">超限↑</span></td>
+    </tr>
+    <tr>
+      <td>TX Gain 3600M</td><td>32.1 dB</td><td>31.8 dB</td><td>30.0</td><td>34.0</td><td>−0.3 dB</td>
+      <td><span class="pill pill-green" title="No Difference">无差异</span></td>
+    </tr>
+    <tr>
+      <td>PA IDLE CURR</td><td>210 mA</td><td>480 mA</td><td>100</td><td>400</td><td style="color:var(--warn)">+270 mA</td>
+      <td><span class="pill pill-red" title="Exceeds Limit ↑">超限↑</span></td>
+    </tr>
+    <tr>
+      <td>TX EVM 3600M</td><td>−38.2 dB</td><td>−35.1 dB</td><td>—</td><td>−32.0 dB</td><td>+3.1 dB</td>
+      <td><span class="pill pill-orange" title="Degraded, Within Limit">劣化 未超限</span></td>
+    </tr>
+  </table>
+  <p style="font-size:12px;color:var(--muted)">↑ 以上数据为示意，Delta 越大说明该指标在该次失败中劣化越明显。<span class="en">Sample data only — larger Delta indicates greater degradation in that failure.</span></p>
+</div>
+
+<h3>跨站/跨机台差异分析<span class="en">Cross-Station / Cross-Fixture Analysis</span></h3>
+<div class="card">
+  <p>利用已有的 <code>get_cross_station_barcodes()</code>，对出现在多台机台上的条码做：<br>
+  <span class="en">Using existing <code>get_cross_station_barcodes()</code>, for barcodes appearing on multiple stations:</span></p>
+  <div class="grid-2" style="margin-top:12px">
+    <div>
+      <div class="pill pill-blue" title="Scenario A: Station A Fail → Station B Pass">场景A：A台 Fail → B台 Pass</div>
+      <p style="font-size:13px;margin-top:8px;color:var(--muted)">极有价值的数据对：A/B 台测量值差异 = 环境差/工装差/仪器差的直接体现。高度提示<b>测试设备问题</b>而非 DUT 硬件问题。<span class="en">Highly valuable data pair: A/B measurement diff = direct evidence of environment/fixture/instrument differences. Strongly suggests <b>test equipment issue</b>, not DUT hardware.</span></p>
+    </div>
+    <div>
+      <div class="pill pill-orange" title="Scenario B: Station A Fail → Station A Pass (retest)">场景B：A台 Fail → A台 Pass（重测通过）</div>
+      <p style="font-size:13px;margin-top:8px;color:var(--muted)">同一设备先失败后通过 → 提示<b>接触/偶发性问题</b>，需结合 PA CURR 趋势判断。<span class="en">Same station: fail then pass → suggests <b>contact/intermittent issue</b>; cross-check with PA CURR trend.</span></p>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     §5 用户知识输入机制
+═══════════════════════════════════════════════════════════ -->
+<h2>五、用户知识输入机制（YAML → 规则库）<span class="en">Ⅴ. User Knowledge Input (YAML → Rule Base)</span></h2>
+<div class="callout">
+  工程师经验是最宝贵的故障诊断资产，YAML 文件是一种低门槛、版本可控的知识载体。<span class="en">Engineer experience is the most valuable fault-diagnosis asset; YAML files are a low-barrier, version-controlled knowledge carrier.</span>
+</div>
+
+<div class="grid-2">
+  <div class="card">
+    <div class="card-title">YAML 格式设计<span class="en">YAML Format Design</span></div>
+    <pre style="font-size:11px"># fault_relationships_20260415.yaml
+# 由工程师根据故障分析经验定期整理
+# Maintained periodically by engineers based on fault analysis
+
+version: "1.0"
+author: "工程师姓名 / Engineer Name"
+date: "2026-04-15"
+
+rules:
+  # 规则1 / Rule 1: PA电流异常 → 通常是PA器件损坏
+  - keywords: "PA CURR, IDLE CURR, 电流偏高, 过流"
+    fault_type: "PA电流异常"
+    suggestion: |
+      检查PA供电纹波（对比pass记录值）。
+      若IDLE CURR > 400mA 且 pass 记录正常，
+      高概率PA器件损坏，建议返修。
+    confidence: 0.9
+
+  # 规则2 / Rule 2: NF劣化且同台其他条码正常 → DUT LNA问题
+  - keywords: "RX NF, noise figure, 底噪偏高, NF ORBI"
+    fault_type: "LNA/滤波器问题"
+    suggestion: |
+      对比pass记录NF值，若delta > 3dB 且
+      其他条码NF正常，高概率LNA器件损坏。
+    confidence: 0.8
+    cross_ref: "see also: 射频链路问题"
+
+  # 规则3 / Rule 3: 多台设备同时出现 → 校准/环境问题
+  - keywords: "TX Power, Output Power, 功率偏低"
+    fault_type: "仪器/链路校准偏差"
+    suggestion: |
+      若多台设备同时出现相同频点功率偏低，
+      优先排查该频点校准文件和链路补偿值。
+    confidence: 0.7
+    applies_when: "cross_station_fail_count > 3"</pre>
+  </div>
+  <div class="card">
+    <div class="card-title">加载流程<span class="en">Loading Process</span></div>
+    <div class="flow" style="flex-direction:column;gap:12px;align-items:stretch">
+      <div style="background:#e8f0fe;border-radius:6px;padding:10px 14px;font-size:13px">
+        <b>1. 菜单触发 / Menu Trigger</b><br>
+        <span style="color:var(--muted)">工具 → 加载故障关系描述文件…（已有菜单项）<br>
+        <em style="font-size:11px">Tools → Load Fault Relation File… (existing menu item)</em></span>
+      </div>
+      <div style="text-align:center;color:var(--muted)">↓</div>
+      <div style="background:#e8f0fe;border-radius:6px;padding:10px 14px;font-size:13px">
+        <b>2. 解析 YAML / Parse YAML</b><br>
+        <span style="color:var(--muted)">提取 rules 列表；验证必填字段<br>
+        <em style="font-size:11px">Extract rules list; validate required fields</em></span>
+      </div>
+      <div style="text-align:center;color:var(--muted)">↓</div>
+      <div style="background:#e8f0fe;border-radius:6px;padding:10px 14px;font-size:13px">
+        <b>3. 去重 + 合并 / Dedup + Merge</b><br>
+        <span style="color:var(--muted)">检查 keywords 是否与现有规则重复<br>相同 fault_type → 更新 suggestion；不同 → 新增<br>
+        <em style="font-size:11px">Check for duplicate keywords; same fault_type → update suggestion; different → insert</em></span>
+      </div>
+      <div style="text-align:center;color:var(--muted)">↓</div>
+      <div style="background:#e6f4ea;border-radius:6px;padding:10px 14px;font-size:13px">
+        <b>4. 记录到 knowledge_updates 表 / Log to DB</b><br>
+        <span style="color:var(--muted)">source_file, loaded_at, rules_added, rules_modified</span>
+      </div>
+      <div style="text-align:center;color:var(--muted)">↓</div>
+      <div style="background:#e6f4ea;border-radius:6px;padding:10px 14px;font-size:13px">
+        <b>5. 弹出确认摘要 / Confirmation Summary</b><br>
+        <span style="color:var(--muted)">新增 N 条 / 更新 M 条 / 跳过 K 条（已存在）<br>
+        <em style="font-size:11px">Added N / Updated M / Skipped K (already exists)</em></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h3>反向知识提取（系统 → YAML 建议）<span class="en">Reverse Knowledge Extraction (System → YAML Suggestions)</span></h3>
+<div class="card">
+  <p>利用已有的 <code>_generate_fail_patterns()</code>，在每次分析后自动输出<b>规则推荐</b>，工程师可以直接复制修改后作为新的 YAML 输入：<br>
+  <span class="en">Using existing <code>_generate_fail_patterns()</code>, auto-generate <b>rule suggestions</b> after each analysis for engineers to fill in and reuse:</span></p>
+  <pre style="font-size:11px"># 系统自动生成 — rule_suggestions_20260415.yaml
+# Auto-generated — based on this analysis: 128 failure records
+# 基于本次分析：128条失败记录，建议添加如下规则
+
+suggestions:
+  - keywords: "RX NF ORBI 3600"  # 出现 47 次 / appeared 47 times
+    current_classification: "未分类故障 / Unclassified"
+    example_first_fail: "RX NF ORBI 3600M test failed, data=8.7(dB), limit=[-, 6.0]"
+    suggested_fault_type: "(请工程师填写 / Please fill in)"
+    suggested_suggestion: "(请工程师填写 / Please fill in)"</pre>
+  <p style="font-size:13px;color:var(--muted)">工程师填写后保存，下次加载 → 自动分类历史未分类记录。<span class="en">After engineer fills in and saves, next load → auto-classify historical unclassified records.</span></p>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     §6 DB 扩展方案
+═══════════════════════════════════════════════════════════ -->
+<h2>六、数据库扩展方案<span class="en">Ⅵ. Database Extension Plan</span></h2>
+
+<div class="grid-2">
+  <div class="card">
+    <div class="card-title">新增表 1：barcode_comparisons<span class="en">New Table 1: barcode_comparisons</span></div>
+    <pre style="font-size:11px">CREATE TABLE IF NOT EXISTS barcode_comparisons (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    barcode         TEXT NOT NULL,
+    -- 失败记录 ID（关联 fault_records.id）
+    -- Fail record ID (FK to fault_records.id)
+    fail_record_id  INTEGER NOT NULL,
+    -- 对应 pass 记录 ID（可空：无 pass 记录）
+    -- Matching pass record ID (nullable)
+    pass_record_id  INTEGER,
+    -- 对比站台信息 / Station info
+    fail_station    TEXT DEFAULT '',
+    pass_station    TEXT DEFAULT '',
+    -- 差异数据 JSON / Diff data JSON
+    -- [{item, fail_val, pass_val, delta,
+    --   lsl, usl, direction, severity}]
+    diff_items      TEXT DEFAULT NULL,
+    diff_summary    TEXT DEFAULT '',   -- 人读摘要 / human-readable summary
+    cross_station   INTEGER DEFAULT 0, -- 1=跨站对比 / cross-station
+    created_at      TEXT NOT NULL
+);</pre>
+  </div>
+  <div class="card">
+    <div class="card-title">新增表 2：knowledge_updates<span class="en">New Table 2: knowledge_updates</span></div>
+    <pre style="font-size:11px">CREATE TABLE IF NOT EXISTS knowledge_updates (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_file     TEXT NOT NULL,  -- 来源 YAML 文件名 / source YAML filename
+    loaded_at       TEXT NOT NULL,  -- 加载时间 / load timestamp
+    rules_added     INTEGER DEFAULT 0,
+    rules_modified  INTEGER DEFAULT 0,
+    rules_skipped   INTEGER DEFAULT 0,
+    raw_yaml        TEXT,           -- 原始内容备份 / raw content backup
+    loaded_by       TEXT DEFAULT '' -- 操作者（可选）/ operator (optional)
+);</pre>
+    <div class="callout" style="margin-top:12px">
+      <b>知识溯源 / Knowledge Traceability</b>：任何规则的来源均可追溯到具体的 YAML 文件和加载时间，便于审计和回滚。<span class="en">Every rule's origin can be traced to a specific YAML file and load time, enabling audit and rollback.</span>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">fault_records 表增强（all_with_fail 模式专用字段）<span class="en">fault_records Table Enhancement (all_with_fail mode fields)</span></div>
+  <p>通过迁移机制（仿现有 <code>_NEW_COLUMNS</code> 模式）新增：<span class="en">Added via migration mechanism (following existing <code>_NEW_COLUMNS</code> pattern):</span></p>
+  <table>
+    <tr><th>字段<span class="en">Field</span></th><th>类型<span class="en">Type</span></th><th>说明<span class="en">Description</span></th></tr>
+    <tr><td><code>all_measurements</code></td><td>TEXT (JSON)</td><td>全量测试项测量值 <code>{item: value}</code>，all_with_fail 模式下 pass/fail 均存<span class="en">All test item measurements <code>{item: value}</code>, stored for both pass and fail in all_with_fail mode</span></td></tr>
+    <tr><td><code>test_incomplete</code></td><td>INTEGER</td><td>0=完整测试，1=测试中断（无结果文件）<span class="en">0=complete test, 1=interrupted test (no result file)</span></td></tr>
+    <tr><td><code>comparison_id</code></td><td>INTEGER</td><td>关联 barcode_comparisons.id（分析后回填）<span class="en">FK to barcode_comparisons.id (back-filled after analysis)</span></td></tr>
+  </table>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     §7 业界最佳实践参考
+═══════════════════════════════════════════════════════════ -->
+<h2>七、业界最佳实践参考<span class="en">Ⅶ. Industry Best Practice References</span></h2>
+<div class="grid-2">
+  <div class="practice-card">
+    <h4>🏭 FDC — 故障检测与分类（Fault Detection and Classification）</h4>
+    <p>半导体制造领域标准方法（SEMI E58）。核心思想：<b>在测试过程中实时检测偏差，自动分类并触发相应处置动作</b>。<br>
+    <span class="en" style="display:block;margin-top:4px">Standard method in semiconductor manufacturing (SEMI E58). Core idea: <b>real-time deviation detection during testing, auto-classify and trigger corresponding actions</b>.</span></p>
+    <p>常见分类维度：<br>
+    <span class="en">Common classification dimensions:</span><br>
+      设备工艺（Chamber/Tool）→ 配方（Recipe）→ 产品（Lot/Wafer）→ 部件（Die）<br>
+    <span class="en">Tool → Recipe → Lot/Wafer → Die</span></p>
+    <div class="apply">📌 在本平台的映射：工站机台 → 产品大类 → 条码 → 测试项，与 FDC 四层分类高度一致。<span class="en">Platform mapping: Station → Product Type → Barcode → Test Item — aligns well with FDC's four-tier classification.</span></div>
+  </div>
+  <div class="practice-card">
+    <h4>📊 SPC — 统计过程控制（Statistical Process Control）</h4>
+    <p>用控制图（Shewhart Chart）监控关键参数的时间序列趋势。<b>Western Electric Rules</b> 定义了 8 种失控判据，如连续 8 点在均值同侧 = 过程偏移信号。<br>
+    <span class="en" style="display:block;margin-top:4px">Uses control charts (Shewhart) to monitor key parameter trends. <b>Western Electric Rules</b> define 8 out-of-control criteria, e.g. 8 consecutive points on same side of mean = process shift signal.</span></p>
+    <p>在测试数据分析中：对每个测试项的历史数据画 Xbar-R 图，早期发现系统性漂移（如仪器老化、温漂）。<br>
+    <span class="en">In test data analysis: plot Xbar-R charts per test item to detect systematic drift early (instrument aging, temperature drift).</span></p>
+    <div class="apply">📌 env_comp/*.csv 校准漂移检测是 SPC 的直接应用场景（平台待实现功能）。<span class="en">env_comp/*.csv calibration drift detection is a direct SPC application (planned platform feature).</span></div>
+  </div>
+  <div class="practice-card">
+    <h4>🔬 Pass/Fail 差异分析（Marginality Analysis）</h4>
+    <p>识别"边缘通过"（Marginal Pass）的 DUT：虽然 pass 了，但多个指标已接近限值，下次测试或老化后可能失败。业界常用方法：<br>
+    <span class="en" style="display:block;margin-top:4px">Identifies "marginal pass" DUTs: passed but multiple metrics near limits — may fail on retest or after aging. Common industry methods:</span></p>
+    <ul style="font-size:13px;color:var(--muted);padding-left:16px">
+      <li><b>Guard Band</b>：比规格限更严的内部门限 <span class="en">/ tighter internal threshold than spec limit</span></li>
+      <li><b>Margin Score</b>：(value - limit_center) / (limit_range/2)，得分接近 ±1 表示边缘 <span class="en">/ score near ±1 = marginal</span></li>
+      <li><b>Correlation Plot</b>：两个强相关项同时劣化 = 共同原因故障 <span class="en">/ two correlated items degrade together = common-cause fault</span></li>
+    </ul>
+    <div class="apply">📌 diff_items 中的 severity 字段（critical/warn/ok）即是简化版 Margin Score。<span class="en">The severity field (critical/warn/ok) in diff_items is a simplified Margin Score.</span></div>
+  </div>
+  <div class="practice-card">
+    <h4>🔄 持续学习规则库（Knowledge-Based Diagnosis）</h4>
+    <p>航空发动机、工业机器人领域常用"<b>专家系统 + 机器学习</b>"混合架构：<br>
+    <span class="en" style="display:block;margin-top:4px">Aero-engine and industrial robotics commonly use a <b>expert system + machine learning</b> hybrid:</span></p>
+    <ul style="font-size:13px;color:var(--muted);padding-left:16px">
+      <li>结构化规则（专家编写）+ 历史案例（数据驱动）联合打分 <span class="en">/ structured rules (expert) + historical cases (data-driven) joint scoring</span></li>
+      <li>新案例积累后，自动推荐新规则候选（如本方案的 rule_suggestions） <span class="en">/ new cases auto-suggest new rule candidates (like our rule_suggestions)</span></li>
+      <li>人工确认后规则入库，下次可用 → 形成<b>人机协作的知识进化回路</b> <span class="en">/ human-confirmed rules enter DB → forms a <b>human-AI collaborative knowledge evolution loop</b></span></li>
+    </ul>
+    <div class="apply">📌 本方案的 YAML 知识输入 + DB 持久化 + Ollama LLM 组合，正是轻量版此架构的落地实现。<span class="en">Our YAML input + DB persistence + Ollama LLM combination is a lightweight implementation of this architecture.</span></div>
+  </div>
+  <div class="practice-card">
+    <h4>📍 Defect Pareto + Root Cause Matrix</h4>
+    <p>可靠性分析的标准工具组合：<span class="en" style="display:block">Standard reliability analysis tool combination:</span></p>
+    <ul style="font-size:13px;color:var(--muted);padding-left:16px">
+      <li><b>Pareto 图</b>：80% 的失败来自 20% 的根因，优先解决高频项 <span class="en">/ 80% of failures from 20% of root causes — fix high-frequency items first</span></li>
+      <li><b>关联矩阵</b>：哪些测试项经常<b>同时失败</b>（共因故障特征）<span class="en"> / which test items frequently <b>fail together</b> (common-cause signature)</span></li>
+      <li><b>时序图</b>：某类故障在哪个时间段集中出现（批次问题 / 设备维修后）<span class="en"> / when does a fault type cluster (batch issue / post-maintenance)</span></li>
+    </ul>
+    <div class="apply">📌 _generate_fail_patterns() 的 top_failed_items 即 Pareto 的数据基础；共失败关联矩阵是 P2 待实现功能。<span class="en">top_failed_items in _generate_fail_patterns() is the Pareto data foundation; co-failure correlation matrix is a P2 planned feature.</span></div>
+  </div>
+  <div class="practice-card">
+    <h4>🤖 LLM 辅助诊断（增强版）<span style="font-size:12px;font-weight:400"> / LLM-Assisted Diagnosis (Enhanced)</span></h4>
+    <p>已有 Ollama 集成（qwen2.5:7b）。业界经验：<span class="en" style="display:block">Ollama integration (qwen2.5:7b) already exists. Industry experience:</span></p>
+    <ul style="font-size:13px;color:var(--muted);padding-left:16px">
+      <li><b>提示词工程</b>：结构化上下文 > 原始日志 dump；限制字数；要求 JSON 输出 <span class="en">/ structured context > raw log dump; limit token count; require JSON output</span></li>
+      <li><b>RAG 增强</b>：将历史已分类案例作为 few-shot 示例注入提示词 <span class="en">/ inject historical classified cases as few-shot examples</span></li>
+      <li><b>置信度阈值</b>：LLM confidence &lt; 0.6 时，保留"未分类"等人工审查 <span class="en">/ when LLM confidence &lt; 0.6, keep as "unclassified" for human review</span></li>
+    </ul>
+    <div class="apply">📌 diff 分析结果可作为额外上下文注入 Ollama 提示词，提升诊断精准度。<span class="en">Diff analysis results can be injected into Ollama prompts as additional context to improve diagnostic accuracy.</span></div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     §8 实现路线图
+═══════════════════════════════════════════════════════════ -->
+<h2>八、实现路线图<span class="en">Ⅷ. Implementation Roadmap</span></h2>
+<div class="card">
+<div class="timeline">
+  <div class="t-item">
+    <div class="t-dot"></div>
+    <div class="t-title">Phase 1 — 基础框架 <span class="pill pill-blue" title="Core Features">核心功能</span></div>
+    <div class="t-body">
+      <ul>
+        <li><code>fault_db.py</code>：新增 <code>barcode_comparisons</code> + <code>knowledge_updates</code> 表；增量迁移<span class="en">Add barcode_comparisons + knowledge_updates tables; incremental migration</span></li>
+        <li><code>fault_analyzer.py</code>：<code>_extract_all_measurements(record_dir)</code> — 从 xlsx 或 JSON 提取全量测量值<span class="en">Extract all measurement values from xlsx or JSON</span></li>
+        <li><code>fault_analyzer.py</code>：<code>_diff_pass_fail(pass_meas, fail_meas, lsl_usl)</code> — 差异比对核心算法<span class="en">Core diff algorithm</span></li>
+        <li><code>fault_analyzer.py</code>：<code>all_with_fail</code> 模式分支：遍历全部 → 识别 fail → 查对应 pass → diff → 入库<span class="en">all_with_fail mode branch: traverse all → identify fail → find pass → diff → persist</span></li>
+        <li><code>main.py</code>：<code>all_with_fail</code> 代码块调用 <code>run_fault_analysis(mode='all_with_fail')</code></li>
+      </ul>
+    </div>
+  </div>
+  <div class="t-item">
+    <div class="t-dot green"></div>
+    <div class="t-title">Phase 2 — 用户知识集成 <span class="pill pill-green" title="Knowledge Accumulation">知识积累</span></div>
+    <div class="t-body">
+      <ul>
+        <li><code>fault_analyzer.py</code>：<code>load_knowledge_yaml(yaml_path, db_path)</code> — 解析 + 去重 + 合并规则<span class="en">Parse + dedup + merge rules</span></li>
+        <li><code>main.py</code>：「工具 → 加载故障关系描述文件…」对接 <code>load_knowledge_yaml()</code><span class="en">Wire menu item to load_knowledge_yaml()</span></li>
+        <li>每次分析结束后自动生成 <code>rule_suggestions_YYYYMMDD.yaml</code> 模板<span class="en">Auto-generate rule suggestion template after each analysis</span></li>
+        <li>提供 YAML 模板文件供工程师参考<span class="en">Provide YAML template file for engineers</span></li>
+      </ul>
+    </div>
+  </div>
+  <div class="t-item">
+    <div class="t-dot orange"></div>
+    <div class="t-title">Phase 3 — 跨站深度分析 <span class="pill pill-orange" title="Advanced Features">高级功能</span></div>
+    <div class="t-body">
+      <ul>
+        <li>跨站差异统计：同一测试项在不同机台的系统性偏差（提示仪器校准问题）<span class="en">Cross-station diff stats: systematic deviation of same test item across stations (flags calibration issues)</span></li>
+        <li>共失败项关联矩阵：哪些测试项倾向于同时失败（共因故障特征）<span class="en">Co-failure correlation matrix: test items that tend to fail together (common-cause signature)</span></li>
+        <li>时序分析：按测试时间绘制故障类型趋势，识别批次问题<span class="en">Time-series analysis: plot fault type trends by test time, identify batch issues</span></li>
+        <li>Ollama 提示词增强：将 diff 结果注入上下文<span class="en">Ollama prompt enhancement: inject diff results into context</span></li>
+      </ul>
+    </div>
+  </div>
+  <div class="t-item">
+    <div class="t-dot purple"></div>
+    <div class="t-title">Phase 4 — 报告与可视化 <span class="pill pill-purple" title="Presentation Layer">展示层</span></div>
+    <div class="t-body">
+      <ul>
+        <li>HTML 报告中增加「故障分析」Tab：Pareto 图 + 跨站热图 + 未分类样本列表<span class="en">Add "Fault Analysis" tab to HTML report: Pareto chart + cross-station heatmap + unclassified sample list</span></li>
+        <li>barcode_comparisons 可视化：per 条码的 pass/fail 对比表格<span class="en">barcode_comparisons visualization: per-barcode pass/fail comparison table</span></li>
+        <li>知识库管理界面：查看/编辑/导出 fault_rules（未来可做 Toplevel 弹窗）<span class="en">Knowledge base management UI: view/edit/export fault_rules (future Toplevel window)</span></li>
+      </ul>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     §9 关键技术决策
+═══════════════════════════════════════════════════════════ -->
+<h2>九、关键技术决策<span class="en">Ⅸ. Key Technical Decisions</span></h2>
+<div class="grid-2">
+  <div class="card">
+    <div class="card-title">决策 1：full measurements 存在哪里？<span class="en">Decision 1: Where to store full measurements?</span></div>
+    <p><span class="pill pill-orange" title="Option A">方案A</span> 存入 <code>fault_records.all_measurements</code> JSON 字段（新增列，迁移兼容）<br>
+    <span class="en">Store in <code>fault_records.all_measurements</code> JSON column (new column, migration-compatible)</span></p>
+    <p><span class="pill pill-blue" title="Option B">方案B</span> 只在内存中做 diff，不持久化原始全量数据<br>
+    <span class="en">Diff in memory only, do not persist raw measurement data</span></p>
+    <div class="callout orange">推荐 A：持久化后可随时重新分析，不需要重新读取原始文件。字段可选填，不影响现有记录。<span class="en">Recommend A: persisted data can be re-analyzed anytime without re-reading raw files. Nullable column — does not affect existing records.</span></div>
+  </div>
+  <div class="card">
+    <div class="card-title">决策 2：无 pass 记录的失败条码如何处理？<span class="en">Decision 2: Handling failed barcodes with no pass record?</span></div>
+    <p>部分条码只有失败记录，从未测试通过。此时无法做 diff。<br>
+    <span class="en">Some barcodes only have fail records — never passed. Diff is impossible in this case.</span></p>
+    <p><span class="pill pill-blue" title="Handling Method">处理方式</span></p>
+    <ul style="font-size:13px;padding-left:16px;color:var(--muted)">
+      <li><code>barcode_comparisons.pass_record_id = NULL</code></li>
+      <li><code>diff_summary = "无对应 pass 记录 / No matching pass record"</code></li>
+      <li>在报告中标注"首次测试即失败"，此类 DUT 优先怀疑硬件问题<span class="en">Mark as "failed on first test" in report — suspect hardware issue first</span></li>
+    </ul>
+  </div>
+  <div class="card">
+    <div class="card-title">决策 3：YAML 中的规则冲突如何处理？<span class="en">Decision 3: Handling YAML rule conflicts?</span></div>
+    <p>当新 YAML 的 keywords 与现有规则高度重叠时：<br>
+    <span class="en">When new YAML keywords highly overlap with existing rules:</span></p>
+    <ul style="font-size:13px;padding-left:16px;color:var(--muted)">
+      <li>精确匹配（同 keywords + 同 fault_type）→ 更新 suggestion（版本升级）<span class="en">Exact match (same keywords + same fault_type) → update suggestion (version upgrade)</span></li>
+      <li>同 keywords 但不同 fault_type → 警告用户，让用户选择"覆盖/跳过/新增"<span class="en">Same keywords, different fault_type → warn user, let user choose overwrite/skip/add</span></li>
+      <li>全新 keywords → 直接新增<span class="en">All-new keywords → insert directly</span></li>
+    </ul>
+  </div>
+  <div class="card">
+    <div class="card-title">决策 4：all_with_fail 与现有 all 模式的关系？<span class="en">Decision 4: Relation between all_with_fail and existing 'all' mode?</span></div>
+    <p>建议：<code>all_with_fail</code> 作为 <code>all</code> 模式的<b>超集升级版</b>：<br>
+    <span class="en">Recommendation: <code>all_with_fail</code> as a <b>superset upgrade</b> of <code>all</code> mode:</span></p>
+    <ul style="font-size:13px;padding-left:16px;color:var(--muted)">
+      <li>在 <code>run_fault_analysis(mode=)</code> 参数中新增 <code>'all_with_fail'</code><span class="en">Add <code>'all_with_fail'</code> to the mode parameter of <code>run_fault_analysis()</code></span></li>
+      <li>比 <code>'all'</code> 多做：①pass 记录提取全量测量值；② diff 分析；③跨站比对<span class="en">Does more than <code>'all'</code>: ① extract full pass measurements; ② diff analysis; ③ cross-station comparison</span></li>
+      <li>比 <code>'fail_only'</code> 多做：保留 pass 记录作为参照基准<span class="en">Does more than <code>'fail_only'</code>: retains pass records as reference baseline</span></li>
+    </ul>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     §10 总结
+═══════════════════════════════════════════════════════════ -->
+<h2>十、总结<span class="en">Ⅹ. Summary</span></h2>
+<div class="card">
+  <div class="grid-3">
+    <div>
+      <div class="pill pill-blue" style="font-size:14px;padding:6px 14px" title="Short-term Value">短期价值</div>
+      <ul style="font-size:13px;padding-left:16px;margin-top:10px;color:var(--muted)">
+        <li>自动找出每个失败条码的最佳参照 pass 记录<span class="en">Auto-find the best reference pass record for each failed barcode</span></li>
+        <li>量化 pass/fail 之间的指标差异<span class="en">Quantify metric differences between pass and fail</span></li>
+        <li>跨站失败 = 设备问题的早期预警<span class="en">Cross-station failure = early warning of equipment issues</span></li>
+      </ul>
+    </div>
+    <div>
+      <div class="pill pill-green" style="font-size:14px;padding:6px 14px" title="Mid-term Value">中期价值</div>
+      <ul style="font-size:13px;padding-left:16px;margin-top:10px;color:var(--muted)">
+        <li>工程师经验通过 YAML 沉淀入库<span class="en">Engineer experience accumulated into DB via YAML</span></li>
+        <li>规则库随分析次数增加不断丰富<span class="en">Rule base grows richer with each analysis</span></li>
+        <li>未分类故障比例持续下降<span class="en">Unclassified fault ratio continuously decreases</span></li>
+      </ul>
+    </div>
+    <div>
+      <div class="pill pill-purple" style="font-size:14px;padding:6px 14px" title="Long-term Value">长期价值</div>
+      <ul style="font-size:13px;padding-left:16px;margin-top:10px;color:var(--muted)">
+        <li>积累成产线专属故障知识库<span class="en">Build a production-line-specific fault knowledge base</span></li>
+        <li>新员工上手时间大幅缩短<span class="en">Dramatically reduce onboarding time for new engineers</span></li>
+        <li>为后续引入更强 LLM 做好数据基础<span class="en">Build the data foundation for future stronger LLM integration</span></li>
+      </ul>
+    </div>
+  </div>
+  <div class="callout green" style="margin-top:20px">
+    <b>核心原则 / Core Principle</b>：系统不替代工程师判断，而是让工程师的每一次判断都能<b>被记录、被复用、被传承</b>。<span class="en">The system does not replace engineer judgment — it ensures every judgment can be <b>recorded, reused, and passed on</b>.</span>
+  </div>
+</div>
+
+<div style="margin-top:48px;padding-top:16px;border-top:1px solid var(--border);font-size:12px;color:var(--muted);text-align:center">
+  CPK分析平台 · Zillnk Efficiency Improvement Group · 设计讨论稿 / Design Draft · 2026-04-15
+</div>
+</div>
+
+</body>
+</html>
